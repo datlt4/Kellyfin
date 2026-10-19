@@ -9,13 +9,16 @@ COPY public ./public
 RUN npm run build
 
 FROM rust:1-bookworm AS build
+# Multi-arch builds run in parallel: caches are per platform (a shared target dir would mix
+# architectures) and the registry is locked (concurrent unpacking fails with "File exists").
+ARG TARGETPLATFORM
 WORKDIR /src
 COPY server/Cargo.toml server/Cargo.lock ./
 COPY server/migrations ./migrations
 COPY server/src ./src
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    cargo build --release && cp target/release/kellyfin /kellyfin
+RUN --mount=type=cache,id=cargo-registry-$TARGETPLATFORM,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-target-$TARGETPLATFORM,target=/src/target,sharing=locked \
+    cargo build --release --locked && cp target/release/kellyfin /kellyfin
 
 FROM debian:bookworm-slim
 RUN apt-get update \
