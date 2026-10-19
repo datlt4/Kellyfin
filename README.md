@@ -21,7 +21,7 @@ On first start an admin (`root` by default) is created; without `KELLYFIN_ADMIN_
 
 ```sh
 # 1. Export (read-only) libraries, paths, titles, images and watch progress
-docker run --rm --network host -u 1000:1000 -v $PWD/jellyfin-export:/out ghcr.io/datlt4/kellyfin \
+docker run --rm --network host -u 1000:1000 -v $PWD/jellyfin-export:/out hienanh/kellyfin \
   kellyfin jellyfin-export --url http://localhost:8021 --key <API_KEY> --out /out
 
 # 2. Import into Kellyfin (runs a full scan afterwards; add --map FROM=TO when media paths differ)
