@@ -31,7 +31,7 @@ A self-hosted replacement for Jellyfin, written from scratch:
 | P2 | Player: direct play, remux, subtitles, audio tracks, progress, PiP | done |
 | P3 | On-demand HLS transcoding (VAAPI / NVENC / x264), quality menu | done |
 | P4 | Settings, dashboard, users, libraries, search, title-based suggestions | done |
-| P5 | Multi-platform releases, mobile apps, IPA re-sign jobs | **in progress** (§6): CI builds APK + IPA (green), no release published yet |
+| P5 | Multi-platform releases, mobile apps, IPA re-sign jobs | **v1.0.0 released** (https://github.com/datlt4/Kellyfin/releases/tag/v1.0.0); re-sign jobs and device installs still to do (§6) |
 | P6 | Chromecast + AirPlay | code done, **not tested with a real device** |
 | P7 | AI upscale (GPU server) | not started (§8) |
 
@@ -297,7 +297,7 @@ the A8 Star is the Samsung G885F). A free Apple ID allows only 3 sideloaded apps
 ## 6. Open items
 
 1. **Run the repair on the server** (Dashboard → Check → Fix): 6 wrong Jumong items; review the 39 others.
-2. **Finish P5**: check the v1.0.0 release run and assets; confirm repo secrets `ANDROID_KEYSTORE_B64/PASS`
+2. **Finish P5**: v1.0.0 is out; confirm repo secrets `ANDROID_KEYSTORE_B64/PASS`
    (keystore in `~/.config/kellyfin/`) — without them the APK is signed with a throwaway key; then activate the two
    re-sign jobs on mabu and install on the iPhone and the A8 Star.
 3. **Linux arm64 desktop** is covered by CI (`ubuntu-22.04-arm`); locally it would need QEMU binfmt.
@@ -335,7 +335,7 @@ the A8 Star is the Samsung G885F). A free Apple ID allows only 3 sideloaded apps
 | `bd4c505` | 0.7.0 | icon controls with menus, dual subtitles, search icon redrawn | Hand-written SVG paths can render wrong: render every icon to a contact sheet to check. |
 | `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
-| (release) | 1.0.0 | first release: `dev` → `main` | The PAT cannot list Actions secrets, so the APK keystore secrets were not verified before release. |
+| `15f74c2` | 1.0.0 | first release: `dev` → `main` | First `release.yml` run: every job green; 20 assets (deb/rpm/AppImage x64+arm64, dmg/app x64+arm64, NSIS/MSI/portable x64+x86+arm64, APK, unsigned IPA). The PAT cannot list Actions secrets, so the APK keystore secrets were not verified. |
 
 ## 8. P7 — AI upscale (planned, nothing built)
 
