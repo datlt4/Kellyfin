@@ -15,6 +15,52 @@ fn set_server(state: State<ProxyState>, url: String, headers: Vec<(String, Strin
     state.base.clone()
 }
 
+/// Screen brightness 0..1 for the player's swipe (iOS; Android uses its JavaScript bridge).
+#[tauri::command]
+async fn get_brightness(app: tauri::AppHandle) -> f64 {
+    #[cfg(target_os = "ios")]
+    {
+        // UIKit belongs to the main thread; async commands run elsewhere, so hop over and wait.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = app.run_on_main_thread(move || {
+            let _ = tx.send(ios::brightness());
+        });
+        return rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap_or(1.0);
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = app;
+        1.0
+    }
+}
+
+#[tauri::command]
+async fn set_brightness(app: tauri::AppHandle, value: f64) {
+    #[cfg(target_os = "ios")]
+    let _ = app.run_on_main_thread(move || ios::set_brightness(value.clamp(0.0, 1.0)));
+    #[cfg(not(target_os = "ios"))]
+    let _ = (app, value);
+}
+
+#[cfg(target_os = "ios")]
+mod ios {
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    pub fn brightness() -> f64 {
+        unsafe {
+            let screen: *mut AnyObject = msg_send![class!(UIScreen), mainScreen];
+            msg_send![screen, brightness]
+        }
+    }
+
+    pub fn set_brightness(v: f64) {
+        unsafe {
+            let screen: *mut AnyObject = msg_send![class!(UIScreen), mainScreen];
+            let _: () = msg_send![screen, setBrightness: v];
+        }
+    }
+}
+
 fn secret() -> String {
     let mut b = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut b);
@@ -31,7 +77,7 @@ pub fn run() {
             app.manage(ProxyState { proxy, base });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![set_server])
+        .invoke_handler(tauri::generate_handler![set_server, get_brightness, set_brightness])
         .run(tauri::generate_context!())
         .expect("error while running Kellyfin");
 }

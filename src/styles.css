@@ -1,4 +1,6 @@
 :root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
   --bg: #0b0d12;
   --surface: #151922;
   --surface-2: #1d2230;
@@ -65,9 +67,9 @@ select, input {
   display: flex;
   align-items: center;
   gap: 16px;
-  height: 56px;
-  padding: 0 var(--gutter);
-  padding-top: env(safe-area-inset-top);
+  /* The bar keeps 56 px for its content below the notch / status bar. */
+  height: calc(56px + var(--safe-top));
+  padding: var(--safe-top) var(--gutter) 0;
   background: rgba(11, 13, 18, 0.96);
   border-bottom: 1px solid var(--line);
 }
@@ -117,8 +119,7 @@ select, input {
 .more-item small { color: var(--muted); }
 .more-item:hover, .more-item.active { background: var(--line); }
 .more-item.active { color: var(--accent-2); }
-.view-toggle { display: flex; gap: 4px; }
-.view-toggle .icon.on { background: var(--surface-2); }
+.view-btn { background: var(--surface-2); }
 .head-tools { display: flex; align-items: center; gap: 10px; }
 .rows { display: flex; flex-direction: column; padding: 0 var(--gutter); }
 .row-item { display: flex; align-items: center; gap: 14px; padding: 8px 0; border-top: 1px solid var(--line); content-visibility: auto; contain-intrinsic-size: auto 84px; }
@@ -364,13 +365,34 @@ main { padding-bottom: 48px; }
   padding: 12px max(16px, env(safe-area-inset-left)) 12px;
   transition: opacity 0.2s;
 }
-.player.ui-hidden .p-top, .player.ui-hidden .p-bottom { opacity: 0; pointer-events: none; }
+.player.ui-hidden .p-top, .player.ui-hidden .p-bottom, .player.ui-hidden .p-center { opacity: 0; pointer-events: none; }
+.p-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: none;
+  align-items: center;
+  gap: clamp(24px, 8vw, 64px);
+  transition: opacity 0.2s;
+}
+.p-center .icon { background: rgba(0, 0, 0, 0.45); }
+.p-center .icon.big { width: 56px; height: 56px; }
+.p-center .icon.huge { width: 76px; height: 76px; }
+@media (pointer: coarse) {
+  .p-center { display: flex; }
+  .icon.pointer-only { display: none; }
+  /* One row on a portrait phone: clock plus seven buttons. */
+  .p-bottom .p-row { gap: 0; flex-wrap: nowrap; }
+  .p-bottom .p-row .icon { width: 36px; height: 40px; }
+  .p-bottom .p-row .clock { font-size: 12px; margin-left: 0; white-space: nowrap; }
+}
 .p-top {
   top: 0;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding-top: max(12px, env(safe-area-inset-top));
+  padding-top: max(12px, var(--safe-top));
   background: linear-gradient(rgba(0, 0, 0, 0.7), transparent);
 }
 .p-title { display: flex; flex-direction: column; min-width: 0; }
@@ -378,7 +400,7 @@ main { padding-bottom: 48px; }
 .p-title .muted { font-size: 12px; }
 .p-bottom {
   bottom: 0;
-  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  padding-bottom: max(12px, var(--safe-bottom));
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
 }
 .p-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -569,7 +591,8 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
 .splash, .page-loading { min-height: 60vh; }
 
 @media (max-width: 640px) {
-  :root { --card-w: 46vw; }
+  :root {
+ --card-w: 46vw; }
   .row-nav { display: none; }
   .topbar { gap: 10px; }
   .brand span { display: none; }

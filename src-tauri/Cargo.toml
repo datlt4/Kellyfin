@@ -1,6 +1,6 @@
 [package]
 name = "kellyfin"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 license = "MIT"
 
@@ -17,6 +17,10 @@ axum = { version = "0.8", default-features = false, features = ["tokio", "http1"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 tokio = { version = "1", features = ["net", "rt-multi-thread", "macros"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# UIScreen brightness for the player's swipe gesture.
+objc2 = "0.6"
 
 [profile.release]
 lto = true

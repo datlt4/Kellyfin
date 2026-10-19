@@ -1,6 +1,6 @@
 # Kellyfin — handoff
 
-State on 2026-10-20, version **1.4.0** (released). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
+State on 2026-10-20, version **1.5.0** (released). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
 `release.yml` (branch `release/v1.0.0`, tag `v1.0.0`, GitHub release with desktop and mobile builds).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
@@ -90,6 +90,7 @@ src/                    SolidJS client
   api.ts                API client, server profiles, auth, formatting helpers
   playback.ts           playability decisions, quality ladder, bandwidth test, VTT parser
   cast.ts               Chromecast sender + AirPlay
+  native.ts             device brightness / volume / fullscreen (Android bridge, iOS Tauri commands)
   pages/                Home, Library, Item, Player, Settings (5 tabs), Search, Login
   components/           TopBar, Row (shelf), Card, Icon (SVG), FolderPicker
 src-tauri/              Tauri shell; src/proxy.rs = local header-adding proxy
@@ -187,8 +188,19 @@ yellow; its language is remembered (`sub2Lang`) and never equals the primary tra
 **Playback speed** 0.25–2× sits under the gear menu ("Playback speed ›"), keys `<`/`>` step it; it is remembered
 (`rate`) and set as `defaultPlaybackRate` so remux restarts and quality switches keep it.
 
-Mobile gestures: vertical swipe left half = brightness (CSS filter 0.2–1.5, remembered), right half = volume
-(iOS ignores scripted volume; the HUD says so). Double tap a side = ±10 s.
+Touch layout: play/pause and ±10 s sit in the middle of the video (shown with the controls), cast / AirPlay / PiP on
+the top row, and the bottom row (clock, favorite, CC, audio, volume, quality, next, fullscreen) fits one line on a
+375 px phone. Mouse users keep the bottom play buttons and no centre overlay (`pointer: coarse` decides).
+
+Mobile gestures (`src/native.ts`): vertical swipe on the left half sets brightness, on the right half volume;
+double tap a side = ±10 s.
+- Android app: `window.KellyfinNative` (`MainActivity.kt`, `NativeBridge`, injected in `onWebViewCreate`) sets the
+  window's screen brightness (reset to the system level when the player closes), the phone's media volume, and
+  fullscreen = hidden system bars + `SENSOR_LANDSCAPE` even with auto-rotate off (back to `UNSPECIFIED` after).
+- iOS app: Tauri commands `get_brightness` / `set_brightness` (`objc2`, `UIScreen.brightness`, on the main
+  thread); the starting level is restored on leaving. iOS forbids setting the system volume, so the right-half
+  swipe is disabled on any iOS device. Forcing landscape with rotation lock on is not implemented on iOS.
+- Web: brightness is a CSS filter on the video (0.2–1.5, remembered) and volume the video's own.
 
 ### 4.5 Transcoding (`server/src/transcode.rs`)
 
@@ -244,7 +256,11 @@ Reason: `<video>`/`<img>` cannot send custom headers. Tested by a unit test only
   on iOS and in the web app on phones.
 - Android app back gesture (`MainActivity.kt`): goes back through the WebView's history; with none left it shows
   "Swipe back again to exit" and leaves on a second back within 2 s.
-- Library pages: grid (cards) or list (small thumbnail, title, length, resolution) view, remembered (`libView`).
+- Library pages: grid (cards) or list (small thumbnail, title, length, resolution) view, one button cycling
+  between them, remembered (`libView`).
+- Top bar height is `56px + var(--safe-top)` so the notch/status-bar padding no longer squeezes the content
+  (it was cut on iOS); `native.ts` sets `--safe-top/--safe-bottom` to 0 in the Android app, whose WebView is
+  already padded by the system bars.
 
 ### 4.7b Mobile keyboards and Android cleartext
 
@@ -375,6 +391,7 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `bd4c505` | 0.7.0 | icon controls with menus, dual subtitles, search icon redrawn | Hand-written SVG paths can render wrong: render every icon to a contact sheet to check. |
 | `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
+| (release) | 1.5.0 | device brightness/volume/landscape fullscreen in the apps, centre player controls, top-bar safe-area fix, one view button | A fixed-height bar with safe-area padding squeezes its content; CSS rules declared earlier lose to later ones of equal specificity (twice). |
 | `8254c7f` | 1.4.0 | Jellyfin-style More menu instead of the sidebar, ← button, Android back + double-back exit, grid/list view | Measuring which chips fit must not depend on a button that the result itself shows or hides (it clipped the last chip). Released (20 assets, CI green); A8 Star updated 1.2.0 → 1.4.0. |
 | `80c47a4` | 1.3.0 | library sidebar (☰ on PC, logo on phones), wheel scrolls the chip bar | Hidden scrollbars leave mouse users stuck: map vertical wheel to horizontal scroll. |
 | `78e547f` | 1.2.0 | iOS/macOS/Linux apps reach plain-http servers via the local proxy; app and server versions shown | The iOS failure was WebKit mixed-content blocking from `tauri://`, not ATS. Released (20 assets, all CI green); the A8 Star updated 1.1.0 → 1.2.0; not yet verified on a real iPhone. |

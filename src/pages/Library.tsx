@@ -90,10 +90,15 @@ export default function Library() {
             <option value="title">A – Z</option>
             <option value="added">Recently added</option>
           </select>
-          <div class="view-toggle">
-            <button class="icon" classList={{ on: view() === "grid" }} onClick={() => setView("grid")} aria-label="Grid view" title="Grid view"><Icon name="grid" size={20} /></button>
-            <button class="icon" classList={{ on: view() === "list" }} onClick={() => setView("list")} aria-label="List view" title="List view"><Icon name="list" size={20} /></button>
-          </div>
+          {/* One button: shows the current view, a click moves to the next one. */}
+          <button
+            class="icon view-btn"
+            onClick={() => setView(view() === "grid" ? "list" : "grid")}
+            aria-label={view() === "grid" ? "Grid view (switch to list)" : "List view (switch to grid)"}
+            title={view() === "grid" ? "Grid view" : "List view"}
+          >
+            <Icon name={view()} size={20} />
+          </button>
         </div>
       </div>
       <Show

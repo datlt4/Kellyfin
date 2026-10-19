@@ -1,6 +1,12 @@
 import { useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import Icon from "../components/Icon";
+import {
+  getBrightness, getVolume, nativeBrightness, nativeFullscreen, nativeVolume, setBrightness, setFullscreen, setVolume,
+} from "../native";
+
+// iOS keeps media volume read-only (hardware buttons only), so the volume swipe is off there.
+const iosDevice = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 import { airplay, castAvailable, castDevice, castLoad, castSeek, castToggle, initCast, remotePaused, remoteTime, requestCast, stopCast } from "../cast";
 import { api, authToken, fmtClock, img, mediaUrl, server, streamLabel, subLabel, type ItemDetail } from "../api";
 import {
@@ -333,7 +339,14 @@ function PlayerView(props: { id: string }) {
   }, { defer: true }));
   const [airplayPick, setAirplayPick] = createSignal<(() => void) | null>(null);
 
+  const [nativeFs, setNativeFs] = createSignal(false);
   async function fullscreen() {
+    if (nativeFullscreen) {
+      // Android app: hide the system bars and turn landscape even with auto-rotate off.
+      setNativeFs(!nativeFs());
+      setFullscreen(nativeFs());
+      return;
+    }
     if (document.fullscreenElement) return document.exitFullscreen();
     await root.requestFullscreen?.().catch(() => {});
     (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.("landscape").catch(() => {});
@@ -343,15 +356,24 @@ function PlayerView(props: { id: string }) {
   const pip = () =>
     document.pictureInPictureElement ? document.exitPictureInPicture() : video.requestPictureInPicture().catch(() => {});
 
-  // Touch: vertical swipe on the left half sets brightness, on the right half volume.
-  const [bright, setBright] = createSignal(Number(localStorage.getItem("brightness")) || 1);
+  // Touch: vertical swipe on the left half sets brightness, on the right half volume. In the apps these drive
+  // the device's screen brightness and media volume; on the web, a filter on the video and the video's volume.
+  const [bright, setBright] = createSignal(nativeBrightness ? 1 : Number(localStorage.getItem("brightness")) || 1);
+  let deviceBright = 0.5;
+  let startBright: number | null = null; // iOS keeps whatever we set system-wide: restore it on leaving
+  if (nativeBrightness) getBrightness().then((v) => { deviceBright = v; startBright = v; });
   const [hud, setHud] = createSignal<{ kind: "sun" | "volume" | "speed"; v: number; note?: string } | null>(null);
   let hudTimer: number | undefined;
   let drag: { x: number; y: number; kind: "sun" | "volume"; start: number; active: boolean } | null = null;
   function onDown(e: PointerEvent) {
     if (e.pointerType === "mouse") return;
     const left = e.clientX < root.clientWidth / 2;
-    drag = { x: e.clientX, y: e.clientY, kind: left ? "sun" : "volume", start: left ? bright() : video.volume, active: false };
+    if (!left && iosDevice) {
+      drag = null;
+      return;
+    }
+    const start = left ? (nativeBrightness ? deviceBright : bright()) : nativeVolume ? getVolume() : video.volume;
+    drag = { x: e.clientX, y: e.clientY, kind: left ? "sun" : "volume", start, active: false };
   }
   function onMove(e: PointerEvent) {
     if (!drag) return;
@@ -362,21 +384,26 @@ function PlayerView(props: { id: string }) {
     }
     // A swipe over 60% of the screen height covers the whole range.
     const span = root.clientHeight * 0.6;
-    let note: string | undefined;
     let shown: number;
-    if (drag.kind === "sun") {
+    if (drag.kind === "sun" && nativeBrightness) {
+      const v = Math.min(1, Math.max(0.02, drag.start + dy / span));
+      setBrightness(v);
+      deviceBright = v;
+      shown = v;
+    } else if (drag.kind === "sun") {
       const v = Math.min(1.5, Math.max(0.2, drag.start + (dy / span) * 1.3));
       setBright(v);
       shown = (v - 0.2) / 1.3;
     } else {
       const v = Math.min(1, Math.max(0, drag.start + dy / span));
-      video.volume = v;
-      video.muted = v === 0;
+      if (nativeVolume) setVolume(v);
+      else {
+        video.volume = v;
+        video.muted = v === 0;
+      }
       shown = v;
-      // iOS keeps media volume read-only: only the hardware buttons change it.
-      if (Math.abs(video.volume - v) > 0.01) note = "Use the volume buttons";
     }
-    setHud({ kind: drag.kind, v: shown, note });
+    setHud({ kind: drag.kind, v: shown });
     clearTimeout(hudTimer);
     hudTimer = window.setTimeout(() => setHud(null), 900);
   }
@@ -384,6 +411,7 @@ function PlayerView(props: { id: string }) {
     const swiped = drag?.active;
     drag = null;
     if (!swiped) return onTap(e);
+    if (nativeBrightness) return;
     try {
       localStorage.setItem("brightness", String(bright()));
     } catch {}
@@ -461,6 +489,9 @@ function PlayerView(props: { id: string }) {
       clearTimeout(hudTimer);
       clearInterval(nextTimer);
       hls?.destroy();
+      // Leave the device as found: Android drops the app's brightness override, iOS gets its level back.
+      if (nativeBrightness) setBrightness(iosDevice ? startBright ?? -1 : -1);
+      if (nativeFs()) setFullscreen(false);
       video.removeAttribute("src");
       video.load(); // stops the download / server-side remux
     });
@@ -651,6 +682,21 @@ function PlayerView(props: { id: string }) {
           <span class="muted">{item()?.library_name}</span>
           <strong>{item()?.title}</strong>
         </div>
+        <span class="grow" />
+        <Show when={castAvailable()}>
+          <button class="icon" classList={{ on: casting() }} onClick={() => (casting() ? stopCast() : requestCast())} aria-label="Cast">
+            <Icon name="cast" />
+          </button>
+        </Show>
+        <Show when={airplayPick()}>{(pick) => <button class="icon" onClick={() => pick()()} aria-label="AirPlay"><Icon name="airplay" /></button>}</Show>
+        <Show when={pipOk}><button class="icon" onClick={pip} aria-label="Picture in picture"><Icon name="pip" /></button></Show>
+      </div>
+
+      {/* Touch screens: play/pause and ±10 s in the middle, the YouTube way. */}
+      <div class="p-center" onPointerUp={(e) => e.stopPropagation()}>
+        <button class="icon big" onClick={() => seek(now() - 10)} aria-label="Back 10 seconds"><Icon name="back10" size={34} /></button>
+        <button class="icon huge" onClick={toggle} aria-label={isPlaying() ? "Pause" : "Play"}><Icon name={isPlaying() ? "pause" : "play"} size={44} /></button>
+        <button class="icon big" onClick={() => seek(now() + 10)} aria-label="Forward 10 seconds"><Icon name="fwd10" size={34} /></button>
       </div>
 
       <div class="p-bottom" ref={controls} onPointerUp={(e) => e.stopPropagation()}>
@@ -669,9 +715,9 @@ function PlayerView(props: { id: string }) {
           />
         </div>
         <div class="p-row">
-          <button class="icon" onClick={toggle} aria-label={isPlaying() ? "Pause" : "Play"}><Icon name={isPlaying() ? "pause" : "play"} size={26} /></button>
-          <button class="icon" onClick={() => seek(now() - 10)} aria-label="Back 10 seconds"><Icon name="back10" /></button>
-          <button class="icon" onClick={() => seek(now() + 10)} aria-label="Forward 10 seconds"><Icon name="fwd10" /></button>
+          <button class="icon pointer-only" onClick={toggle} aria-label={isPlaying() ? "Pause" : "Play"}><Icon name={isPlaying() ? "pause" : "play"} size={26} /></button>
+          <button class="icon pointer-only" onClick={() => seek(now() - 10)} aria-label="Back 10 seconds"><Icon name="back10" /></button>
+          <button class="icon pointer-only" onClick={() => seek(now() + 10)} aria-label="Forward 10 seconds"><Icon name="fwd10" /></button>
           <span class="clock">{fmtClock(shown())} / {fmtClock(duration())}</span>
           <span class="grow" />
           <button class="icon" classList={{ on: fav() }} onClick={toggleFav} aria-label="Favorite"><Icon name="heart" /></button>
@@ -693,13 +739,6 @@ function PlayerView(props: { id: string }) {
           <Show when={item()?.next_id}>
             <button class="icon" onClick={() => nav(`/play/${item()!.next_id}`, { replace: true })} aria-label="Next episode"><Icon name="next" /></button>
           </Show>
-          <Show when={castAvailable()}>
-            <button class="icon" classList={{ on: casting() }} onClick={() => (casting() ? stopCast() : requestCast())} aria-label="Cast">
-              <Icon name="cast" />
-            </button>
-          </Show>
-          <Show when={airplayPick()}>{(pick) => <button class="icon" onClick={() => pick()()} aria-label="AirPlay"><Icon name="airplay" /></button>}</Show>
-          <Show when={pipOk}><button class="icon" onClick={pip} aria-label="Picture in picture"><Icon name="pip" /></button></Show>
           <button class="icon" onClick={fullscreen} aria-label="Fullscreen"><Icon name="fullscreen" /></button>
         </div>
         <span class="p-mode">
