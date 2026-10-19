@@ -1,10 +1,11 @@
 import { A, useParams } from "@solidjs/router";
 import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import {
-  activeServer, api, ApiError, appVersion, fmtClock, img, refreshUser, serverVersion, upload, user,
+  activeServer, api, ApiError, appVersion, fmtClock, img, isTauri, refreshUser, serverVersion, upload, user,
   type Info, type Lib, type LibRow, type ScanStatus, type UserRow,
 } from "../api";
 import FolderPicker from "../components/FolderPicker";
+import { applyUpdate, checkUpdate, updateAvailable, updateProgress } from "../update";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -43,6 +44,7 @@ function Profile() {
   const [pw, setPw] = createSignal("");
   const [pw2, setPw2] = createSignal("");
   const pwAct = useAction();
+  const upAct = useAction();
   const avAct = useAction();
   const changeAvatar = async () => {
     const f = await pickFile("image/*");
@@ -82,6 +84,21 @@ function Profile() {
           <dt>Server</dt><dd>{serverVersion() ? `Kellyfin ${serverVersion()}` : "…"}</dd>
           <dt>Address</dt><dd>{activeServer()?.url ?? location.origin}</dd>
         </dl>
+        <Show when={isTauri}>
+          <div class="row-btns update-row">
+            <button class="btn small" onClick={() => upAct.run(async () => { if (!(await checkUpdate())) throw new Error("Kellyfin is up to date"); })}>Check for updates</button>
+            <Show when={updateAvailable()}>
+              {(u) => (
+                <Show when={u().action !== "none"} fallback={<span class="muted">{u().version} is available; your Mac's re-sign job installs it.</span>}>
+                  <button class="btn small primary" disabled={updateProgress() !== null} onClick={() => upAct.run(applyUpdate)}>
+                    {updateProgress() !== null ? `Installing… ${Math.round(updateProgress()! * 100)}%` : `${u().action === "install" ? "Update to" : "Download"} ${u().version}`}
+                  </button>
+                </Show>
+              )}
+            </Show>
+          </div>
+          <upAct.Note />
+        </Show>
       </section>
       <form class="panel form" onSubmit={savePw}>
         <h2>Password</h2>

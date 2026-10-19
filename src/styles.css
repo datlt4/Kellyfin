@@ -575,6 +575,19 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
 .login input { color: var(--text); padding: 11px 12px; }
 .login img { align-self: center; }
 .server-pick { display: flex; gap: 6px; }
+.login-back { align-self: flex-start; }
+.update-row { margin-top: 14px; }
+.update-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px var(--gutter);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+.update-banner > span:first-child { flex: 1; min-width: 200px; }
 .version { margin: 4px 0 0; text-align: center; font-size: 12px; color: var(--muted); }
 .menu-foot { padding: 8px 10px 4px; margin-top: 4px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
 .about { display: grid; grid-template-columns: 90px 1fr; gap: 8px; margin: 0; }

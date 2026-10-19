@@ -2,11 +2,14 @@ import { useLocation } from "@solidjs/router";
 import { createResource, Match, Show, Switch, type ParentProps } from "solid-js";
 import { restore, user } from "./api";
 import TopBar from "./components/TopBar";
+import UpdateBanner from "./components/UpdateBanner";
+import { autoCheck } from "./update";
 import Login from "./pages/Login";
 
 export default function App(props: ParentProps) {
   const [ready] = createResource(restore);
   const loc = useLocation();
+  autoCheck();
   return (
     <Switch>
       <Match when={ready.loading}>
@@ -18,6 +21,7 @@ export default function App(props: ParentProps) {
       <Match when={user()}>
         <Show when={!loc.pathname.startsWith("/play/")} fallback={props.children}>
           <TopBar />
+          <UpdateBanner />
           <main>{props.children}</main>
         </Show>
       </Match>

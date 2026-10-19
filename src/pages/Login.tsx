@@ -1,7 +1,7 @@
 import { createSignal, For, Show } from "solid-js";
 import { serverVersion } from "../api";
 import {
-  activeServer, appVersion, HERE, isTauri, login, probeServer, restore, savedServers, saveServers, useServer, type ServerProfile,
+  activeServer, appVersion, authToken, HERE, isTauri, login, probeServer, restore, savedServers, saveServers, useServer, type ServerProfile,
 } from "../api";
 
 /** Add / edit a saved server: URL plus optional headers (e.g. a Pangolin access token). */
@@ -121,6 +121,10 @@ export default function Login() {
         }
       >
         <form onSubmit={submit}>
+          {/* Came here from "Add / edit servers" while signed in: go back without signing in again. */}
+          <Show when={authToken()}>
+            <button type="button" class="btn small login-back" onClick={() => restore()}>← Back</button>
+          </Show>
           <img src="/favicon.svg" alt="" width="56" height="56" />
           <h1>Kellyfin</h1>
           <Show when={servers().length}>
