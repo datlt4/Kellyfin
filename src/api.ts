@@ -71,7 +71,6 @@ export function setServer(url: string) {
 
 let token = load("token");
 export const authToken = () => token;
-export { load, save };
 const [user, setUser] = createSignal<User | null>(null);
 export { user };
 
