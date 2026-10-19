@@ -6,6 +6,7 @@ mod images;
 mod jellyfin;
 mod manifest;
 mod scan;
+mod stream;
 mod util;
 
 use anyhow::{bail, Context};

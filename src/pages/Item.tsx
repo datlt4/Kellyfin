@@ -1,16 +1,33 @@
 import { A, useParams } from "@solidjs/router";
-import { createResource, For, Show } from "solid-js";
-import { api, fmtDuration, fmtRes, img, user, type ItemDetail, type Stream } from "../api";
-
-const label = (s: Stream) =>
-  [s.title, s.lang && s.lang !== "und" ? s.lang : null, s.codec?.toUpperCase(), s.channels ? `${s.channels}ch` : null]
-    .filter(Boolean)
-    .join(" · ");
+import { createEffect, createResource, createSignal, For, on, Show } from "solid-js";
+import { api, fmtClock, fmtDuration, fmtRes, img, streamLabel, subLabel, user, type ItemDetail } from "../api";
+import { audioStreams, defaultAudio, defaultSub } from "../playback";
 
 export default function Item() {
   const params = useParams();
-  const [item] = createResource(() => params.id, (id) => api<ItemDetail>(`/items/${id}`));
-  const of = (t: string) => item()?.streams?.filter((s) => s.type === t) ?? [];
+  const [item, { mutate }] = createResource(() => params.id, (id) => api<ItemDetail>(`/items/${id}`));
+  const [audio, setAudio] = createSignal<number | null>(null);
+  const [sub, setSub] = createSignal("off");
+  createEffect(on(item, (it) => {
+    if (!it) return;
+    setAudio(defaultAudio(it));
+    setSub(defaultSub(it));
+  }));
+
+  const playHref = (fromStart = false) => {
+    const q = new URLSearchParams({ sub: sub() });
+    if (audio() !== null) q.set("audio", String(audio()));
+    if (fromStart) q.set("t", "0");
+    return `/play/${item()!.id}?${q}`;
+  };
+  const resumable = () => !!item() && !item()!.played && item()!.position > 5;
+
+  async function patch(body: { played?: boolean; favorite?: boolean }) {
+    const it = item()!;
+    mutate({ ...it, ...body, position: body.played !== undefined ? 0 : it.position });
+    await api(`/items/${it.id}/userdata`, { method: "POST", body: JSON.stringify(body) }).catch(() => mutate(it));
+  }
+
   return (
     <Show when={item()} fallback={<div class="page-loading" />}>
       {(it) => (
@@ -27,23 +44,37 @@ export default function Item() {
               <span>{(it().size / 1048576).toFixed(0)} MB</span>
             </div>
             <div class="actions">
-              <button class="primary" disabled title="Playback arrives in P2">▶ Play</button>
+              <A class="btn primary" href={playHref()}>
+                ▶ {resumable() ? `Resume ${fmtClock(it().position)}` : "Play"}
+              </A>
+              <Show when={resumable()}>
+                <A class="btn" href={playHref(true)}>From start</A>
+              </Show>
+              <button class="btn round" classList={{ on: it().played }} onClick={() => patch({ played: !it().played })} title="Watched">✓</button>
+              <button class="btn round" classList={{ on: it().favorite }} onClick={() => patch({ favorite: !it().favorite })} title="Favorite">♥</button>
             </div>
+            <Show when={resumable()}>
+              <div class="resume-bar"><div style={{ width: `${(it().position / (it().duration || 1)) * 100}%` }} /></div>
+            </Show>
             <dl class="tracks">
               <dt>Audio</dt>
               <dd>
-                <select disabled={!of("audio").length}>
-                  <For each={of("audio")} fallback={<option>None</option>}>{(s) => <option>{label(s)}</option>}</For>
+                <select value={audio() ?? ""} disabled={audioStreams(it()).length < 2} onChange={(e) => setAudio(Number(e.currentTarget.value))}>
+                  <For each={audioStreams(it())} fallback={<option>None</option>}>{(s) => <option value={s.index}>{streamLabel(s)}</option>}</For>
                 </select>
               </dd>
               <dt>Subtitles</dt>
               <dd>
-                <select>
-                  <option>Off</option>
-                  <For each={of("subtitle")}>{(s) => <option>{label(s)}</option>}</For>
+                <select value={sub()} onChange={(e) => setSub(e.currentTarget.value)}>
+                  <option value="off">Off</option>
+                  <For each={it().subtitles}>{(s) => <option value={s.key} disabled={!s.supported}>{subLabel(s)}</option>}</For>
                 </select>
               </dd>
             </dl>
+            <div class="neighbours">
+              <Show when={it().prev_id}><A href={`/item/${it().prev_id}`}>‹ Previous</A></Show>
+              <Show when={it().next_id}><A href={`/item/${it().next_id}`}>Next ›</A></Show>
+            </div>
             <Show when={user()?.is_admin}><p class="path">{it().path}</p></Show>
           </div>
         </div>

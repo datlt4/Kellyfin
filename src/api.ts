@@ -26,6 +26,7 @@ export type Stream = {
   default: boolean;
   channels: number | null;
 };
+export type SubTrack = { key: string; lang: string | null; title: string | null; codec: string; external: boolean; supported: boolean };
 export type ItemDetail = Card & {
   library_name: string;
   path: string;
@@ -36,6 +37,11 @@ export type ItemDetail = Card & {
   bitrate: number | null;
   streams: Stream[] | null;
   favorite: boolean;
+  ext: string;
+  subtitles: SubTrack[];
+  index_size: number | null;
+  prev_id: number | null;
+  next_id: number | null;
 };
 export type ScanStatus = { running: boolean; phase: string; done: number; total: number; error: string | null; finished_at: number | null };
 
@@ -64,6 +70,8 @@ export function setServer(url: string) {
 }
 
 let token = load("token");
+export const authToken = () => token;
+export { load, save };
 const [user, setUser] = createSignal<User | null>(null);
 export { user };
 
@@ -126,6 +134,43 @@ export function fmtDuration(sec: number | null) {
   const m = Math.round(sec / 60);
   return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
 }
+
+/** URL for <video>/<track> use: media elements cannot send headers, so the token rides in ?t=. */
+export const mediaUrl = (path: string, q: Record<string, string | number> = {}) =>
+  `${server()}/api${path}?${new URLSearchParams({ ...q, t: token ?? "" } as Record<string, string>)}`;
+
+export function fmtClock(sec: number) {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  const mm = h ? String(m).padStart(2, "0") : String(m);
+  return `${h ? h + ":" : ""}${mm}:${String(r).padStart(2, "0")}`;
+}
+
+const langNames = (() => {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "language" });
+  } catch {
+    return null;
+  }
+})();
+export function langName(code: string | null) {
+  if (!code) return null;
+  try {
+    return langNames?.of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+export const streamLabel = (s: Stream) =>
+  [s.title, langName(s.lang && s.lang !== "und" ? s.lang : null), s.codec?.toUpperCase(), s.channels ? `${s.channels}ch` : null]
+    .filter(Boolean)
+    .join(" · ");
+
+export const subLabel = (s: SubTrack) =>
+  [s.title ?? langName(s.lang) ?? "Unknown", s.external ? "External" : s.codec.toUpperCase(), s.supported ? null : "unsupported"]
+    .filter(Boolean)
+    .join(" · ");
 
 export function fmtRes(h: number | null, w: number | null) {
   if (!h || !w) return "";

@@ -75,11 +75,13 @@ impl FromRequestParts<AppState> for User {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         let unauthorized = || ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized");
+        // Media elements cannot send headers, so streams pass the token as ?t=.
         let token = parts
             .headers
             .get(AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
+            .or_else(|| parts.uri.query()?.split('&').find_map(|kv| kv.strip_prefix("t=")))
             .ok_or_else(unauthorized)?;
         sqlx::query_as("SELECT u.id, u.name, u.is_admin FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?")
             .bind(token)

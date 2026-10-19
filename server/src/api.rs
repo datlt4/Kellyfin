@@ -1,7 +1,7 @@
 use crate::{
     auth::{self, Admin, User},
     error::{ApiError, ApiResult},
-    scan, AppState,
+    scan, stream, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -31,9 +31,17 @@ pub fn router(st: AppState) -> Router {
         .route("/libraries/{id}", get(library))
         .route("/libraries/{id}/items", get(library_items))
         .route("/items/{id}", get(item))
+        .route("/items/{id}/subtitles/{key}", get(stream::subtitle))
+        .route("/items/{id}/progress", post(stream::progress))
+        .route("/items/{id}/userdata", post(stream::user_data))
         .route("/admin/scan", get(scan_status).post(scan_start))
-        .layer(CompressionLayer::new())
-        .layer(CorsLayer::permissive());
+        .layer(CompressionLayer::new());
+    // Video bodies must not go through compression.
+    let media = Router::new()
+        .route("/items/{id}/file", get(stream::file))
+        .route("/items/{id}/remux", get(stream::remux))
+        .route("/items/{id}/keyframe", get(stream::keyframe));
+    let api = api.merge(media).layer(CorsLayer::permissive());
 
     // Image URLs carry ?v=<version>, so they can be cached forever.
     let img = ServeDir::new(&st.images);
@@ -205,18 +213,50 @@ struct ItemDetail {
     #[sqlx(skip)]
     streams: Value,
     favorite: bool,
+    #[serde(skip)]
+    sort_title: String,
+    #[sqlx(skip)]
+    ext: String,
+    #[sqlx(skip)]
+    subtitles: Vec<stream::SubTrack>,
+    #[sqlx(skip)]
+    index_size: Option<u64>,
+    #[sqlx(skip)]
+    prev_id: Option<i64>,
+    #[sqlx(skip)]
+    next_id: Option<i64>,
 }
 
 async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> ApiResult<Json<ItemDetail>> {
     let sql = format!(
         "SELECT c.*, l.name AS library_name, i.path, i.size, i.added_at, i.container, i.video_codec, i.bitrate,
-           i.streams AS streams_raw, COALESCE(u.favorite, 0) AS favorite
+           i.streams AS streams_raw, COALESCE(u.favorite, 0) AS favorite, i.sort_title
          FROM ({CARD} WHERE i.id = ?2) c
          JOIN items i ON i.id = c.id JOIN libraries l ON l.id = i.library_id
          LEFT JOIN user_data u ON u.item_id = i.id AND u.user_id = ?1"
     );
     let mut d: ItemDetail = sqlx::query_as(&sql).bind(user.id).bind(id).fetch_one(&st.db).await?;
     d.streams = d.streams_raw.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    d.ext = std::path::Path::new(&d.path).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let (path, streams) = (d.path.clone(), d.streams.clone());
+    let is_mp4 = matches!(d.ext.as_str(), "mp4" | "m4v" | "mov");
+    (d.subtitles, d.index_size) = tokio::task::spawn_blocking(move || {
+        (stream::subtitle_tracks(&path, &streams), if is_mp4 { stream::mp4_index_size(&path) } else { None })
+    })
+    .await
+    .map_err(anyhow::Error::from)?;
+    // Neighbours in library order, for prev/next episode.
+    let sibling = |cmp: &str, dir: &str| {
+        format!("SELECT id FROM items WHERE library_id = ? AND (sort_title, id) {cmp} (?, ?) ORDER BY sort_title {dir}, id {dir} LIMIT 1")
+    };
+    for (cmp, dir, slot) in [(">", "ASC", &mut d.next_id), ("<", "DESC", &mut d.prev_id)] {
+        *slot = sqlx::query_scalar(&sibling(cmp, dir))
+            .bind(d.card.library_id)
+            .bind(&d.sort_title)
+            .bind(d.card.id)
+            .fetch_optional(&st.db)
+            .await?;
+    }
     if !user.is_admin {
         d.path = crate::util::file_stem(&d.path);
     }
