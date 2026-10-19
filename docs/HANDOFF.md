@@ -1,6 +1,7 @@
 # Kellyfin — handoff
 
-State on 2026-10-19, version **0.6.1** (branch `dev`; `main` holds only the initial commit).
+State on 2026-10-19, version **0.7.1** (branch `dev`; `main` holds only the initial commit).
+This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
 (most choices came from measurements on the real library), how to build and ship without GitHub Actions,
 and what is still open or unverified.
@@ -29,7 +30,7 @@ A self-hosted replacement for Jellyfin, written from scratch:
 | P2 | Player: direct play, remux, subtitles, audio tracks, progress, PiP | done |
 | P3 | On-demand HLS transcoding (VAAPI / NVENC / x264), quality menu | done |
 | P4 | Settings, dashboard, users, libraries, search, title-based suggestions | done |
-| P5 | Multi-platform releases, mobile apps, IPA re-sign jobs | **in progress** (§6) |
+| P5 | Multi-platform releases, mobile apps, IPA re-sign jobs | **in progress** (§6): CI builds APK + IPA (green), no release published yet |
 | P6 | Chromecast + AirPlay | code done, **not tested with a real device** |
 | P7 | AI upscale (GPU server) | not started (§8) |
 
@@ -135,6 +136,18 @@ Result on the real server: 186 libraries, 6923 Jellyfin items, 7108 images; the 
 Jellyfin had never indexed (7820 total). Jellyfin users have no exportable password: imported users
 (`koi`) need `kellyfin passwd`.
 
+**Wrong titles/posters inherited from Jellyfin.** Jellyfin's online metadata (TheMovieDb) matched generic episode
+file names to unrelated films — `TẬP 5.3.mp4` in "Truyền Thuyết Jumong" became "Bảy Viên Ngọc Rồng: Tập Phim Về
+Bardock" with that movie's poster. Import locks imported titles/images, so scans keep them. `repair.rs`
+(`kellyfin repair [--apply]`, Dashboard → "Wrong titles and thumbnails"):
+- *certainly wrong* = the file name has no meaningful word (only episode words/numbers) but carries a title:
+  bulk-fixed back to the file name + a frame grab. On the real data: 6 items, all in Jumong, all wrong.
+- *check yourself* = the title shares no word with a meaningful file name (39 items): mostly correct Vietnamese
+  translations (Final Destination → "Lưỡi Hái Tử Thần"), a few real mismatches ("Tổ Quốc Trong Tim" → "Full
+  Moon Rising"). Listed only, with a per-item "Use file name" button.
+- A "portrait poster on a landscape video" rule was tried and dropped: it flagged 501 posters, mostly correct
+  ones of real films (Totoro, Grave of the Fireflies).
+
 ### 4.4 Playback decision (`src/playback.ts`, `pages/Player.tsx`)
 
 Order: **direct → remux → HLS transcode**, with automatic fallback on errors.
@@ -164,6 +177,11 @@ unsupported.
 Progress is saved every 10 s, after seeks, on pause, and on `pagehide`/hidden (tab close never runs cleanup).
 ≥ 92% marks the item played. Auto-next goes to the next item by `sort_title`, or to the first item of the next
 season's library (`recommend::next_season`: "Arrow Season 1" → "Arrow Season 2").
+
+Player controls are icons with popup menus (Jellyfin-style UX): favorite, CC (subtitles, with a "Secondary
+subtitles" sub-menu), audio track, volume (slider on fine pointers only), quality (gear), next, cast, AirPlay, PiP,
+fullscreen. **Dual subtitles** for language learning: a second track is drawn above the first, smaller and
+yellow; its language is remembered (`sub2Lang`) and never equals the primary track.
 
 Mobile gestures: vertical swipe left half = brightness (CSS filter 0.2–1.5, remembered), right half = volume
 (iOS ignores scripted volume; the HUD says so). Double tap a side = ±10 s.
@@ -275,15 +293,19 @@ the A8 Star is the Samsung G885F). A free Apple ID allows only 3 sideloaded apps
 
 ## 6. Open items
 
-1. **Finish P5**: add repo secrets `ANDROID_KEYSTORE_B64/PASS` (keystore in `~/.config/kellyfin/`), merge `dev`
-   into `main` to publish v0.6.1 through `release.yml`, then activate the two re-sign jobs on mabu and install on
-   the iPhone and the A8 Star.
-2. **Linux arm64 desktop** is covered by CI (`ubuntu-22.04-arm`); locally it would need QEMU binfmt.
-3. **Verify on real devices**: hev1/remux rules on iOS, header proxy in the apps, Android WebView fullscreen
+1. **Run the repair on the server** (Dashboard → Check → Fix): 6 wrong Jumong items; review the 39 others.
+2. **Finish P5**: add repo secrets `ANDROID_KEYSTORE_B64/PASS` (keystore in `~/.config/kellyfin/`), merge `dev`
+   into `main` to publish through `release.yml`, then activate the two re-sign jobs on mabu and install on the
+   iPhone and the A8 Star.
+3. **Linux arm64 desktop** is covered by CI (`ubuntu-22.04-arm`); locally it would need QEMU binfmt.
+4. **Verify on real devices**: hev1/remux rules on iOS, header proxy in the apps, Android WebView fullscreen
    and PiP (may need a native plugin), Chromecast/AirPlay.
-4. Android/iOS apps have no in-app updater (Kermius uses the Tauri updater with signing keys; not set up here).
-5. The owner may want to retire Jellyfin once satisfied; Kellyfin never writes to media folders.
-6. P7 (§8).
+5. Disk on koi-pc: Rust/Docker build outputs were deleted on request (~19 GB). `server/target`,
+   `src-tauri/target` and the `rust:1-bookworm` image come back whenever tests run locally — delete them after.
+   Docker's build cache (~75 GB, mostly other projects) was left alone.
+6. Android/iOS apps have no in-app updater (Kermius uses the Tauri updater with signing keys; not set up here).
+7. The owner may want to retire Jellyfin once satisfied; Kellyfin never writes to media folders.
+8. P7 (§8).
 
 ## 7. Commit history (what each step did and what it taught)
 
@@ -306,6 +328,9 @@ the A8 Star is the Samsung G885F). A free Apple ID allows only 3 sideloaded apps
 | `0d0f16d` | | local mobile build script | BSD vs GNU `sed -i`. |
 | `e37f596` | | local desktop build script, executable bits | The repo disk does not keep exec bits: use `git update-index --chmod=+x`. |
 | `52979d7` | 0.6.1 | proxy compile fixes, Docker builds keep host `node_modules` | The proxy had never been compiled; first real build caught it. |
+| `00b81e1`, `23d76ae` | | this handoff, `publish-release.sh`, Windows local build on Ubuntu 24.04 | Ubuntu 22.04's NSIS 3.08 lacks `Win\RestartManager.nsh`. CI then went green for build + mobile (first APK/IPA). |
+| `bd4c505` | 0.7.0 | icon controls with menus, dual subtitles, search icon redrawn | Hand-written SVG paths can render wrong: render every icon to a contact sheet to check. |
+| `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
 
 ## 8. P7 — AI upscale (planned, nothing built)
 
