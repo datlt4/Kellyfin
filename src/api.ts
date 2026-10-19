@@ -25,6 +25,7 @@ export type Stream = {
   title: string | null;
   default: boolean;
   channels: number | null;
+  tag?: string | null;
 };
 export type SubTrack = { key: string; lang: string | null; title: string | null; codec: string; external: boolean; supported: boolean };
 export type ItemDetail = Card & {
@@ -45,7 +46,7 @@ export type ItemDetail = Card & {
 };
 export type Related = { libraries: Lib[]; items: Card[] };
 export type Session = { user: string; item_id: number; title: string; position: number; duration: number | null; mode: string };
-export type JobInfo = { item_id: number; p: number; audio: number; hw: boolean; position: number; paused: boolean };
+export type JobInfo = { item_id: number; p: number; audio: number; encoder: string; position: number; paused: boolean };
 export type Info = {
   version: string;
   libraries: number;

@@ -3,6 +3,7 @@ import { createEffect, createResource, createSignal, For, on, Show } from "solid
 import { api, fmtClock, fmtDuration, fmtRes, img, streamLabel, subLabel, upload, user, type ItemDetail, type Related } from "../api";
 import { ItemCard, LibCard } from "../components/Card";
 import Row from "../components/Row";
+import Icon from "../components/Icon";
 import { audioStreams, defaultAudio, defaultSub } from "../playback";
 
 export default function Item() {
@@ -73,13 +74,13 @@ export default function Item() {
             </div>
             <div class="actions">
               <A class="btn primary" href={playHref()}>
-                ▶ {resumable() ? `Resume ${fmtClock(it().position)}` : "Play"}
+                <Icon name="play" size={18} /> {resumable() ? `Resume ${fmtClock(it().position)}` : "Play"}
               </A>
               <Show when={resumable()}>
                 <A class="btn" href={playHref(true)}>From start</A>
               </Show>
-              <button class="btn round" classList={{ on: it().played }} onClick={() => patch({ played: !it().played })} title="Watched">✓</button>
-              <button class="btn round" classList={{ on: it().favorite }} onClick={() => patch({ favorite: !it().favorite })} title="Favorite">♥</button>
+              <button class="btn round" classList={{ on: it().played }} onClick={() => patch({ played: !it().played })} title="Watched"><Icon name="check" size={20} /></button>
+              <button class="btn round" classList={{ on: it().favorite }} onClick={() => patch({ favorite: !it().favorite })} title="Favorite"><Icon name="heart" size={20} /></button>
             </div>
             <Show when={resumable()}>
               <div class="resume-bar"><div style={{ width: `${(it().position / (it().duration || 1)) * 100}%` }} /></div>

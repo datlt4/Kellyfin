@@ -261,6 +261,13 @@ async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> Ap
     );
     let mut d: ItemDetail = sqlx::query_as(&sql).bind(user.id).bind(id).fetch_one(&st.db).await?;
     d.streams = d.streams_raw.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    // Files scanned before codec tags were recorded: fill in the video tag once (hev1 vs hvc1 matters to Safari).
+    if let Some(v) = d.streams.as_array_mut().and_then(|a| a.iter_mut().find(|s| s["type"] == "video" && s.get("tag").is_none())) {
+        if let Some(tag) = stream::video_tag(&d.path).await {
+            v["tag"] = tag.into();
+            sqlx::query("UPDATE items SET streams = ? WHERE id = ?").bind(d.streams.to_string()).bind(d.card.id).execute(&st.db).await?;
+        }
+    }
     d.ext = std::path::Path::new(&d.path).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     let (path, streams) = (d.path.clone(), d.streams.clone());
     let is_mp4 = matches!(d.ext.as_str(), "mp4" | "m4v" | "mov");

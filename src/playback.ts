@@ -31,6 +31,9 @@ export function canCopyAudio(it: ItemDetail, audio: number | null) {
   return !!a && canPlay("mp4", it.video_codec, a.codec);
 }
 
+// WebKit on Apple (Safari, every iOS browser, Tauri on iOS/macOS).
+const appleWebKit = /AppleWebKit/.test(navigator.userAgent) && !/Chrome\/|Android/.test(navigator.userAgent);
+
 export const audioStreams = (it: ItemDetail): Stream[] => it.streams?.filter((s) => s.type === "audio") ?? [];
 
 /** The track a browser plays from the raw file: flagged default, else the first. */
@@ -47,9 +50,13 @@ export function originalMode(it: ItemDetail, audio: number | null): "direct" | "
   const a = audioStreams(it).find((s) => s.index === audio) ?? nativeAudio(it);
   const container = ["mp4", "m4v", "mov"].includes(it.ext) ? "mp4" : it.ext === "webm" ? "webm" : null;
   const smallIndex = (it.index_size ?? 0) <= MAX_DIRECT_INDEX;
-  if (container && smallIndex && a?.index === nativeAudio(it)?.index && canPlay(container, it.video_codec, a?.codec)) return "direct";
+  const tag = it.streams?.find((s) => s.type === "video")?.tag;
+  // WebKit plays hev1-tagged HEVC as audio over a black picture; only hvc1 shows.
+  const tagOk = !(appleWebKit && it.video_codec === "hevc" && tag !== "hvc1");
+  if (container && smallIndex && tagOk && a?.index === nativeAudio(it)?.index && canPlay(container, it.video_codec, a?.codec)) return "direct";
+  // Remux streams without byte ranges, which WebKit refuses for <video>; it gets a transcode instead.
   // Remux output is MP4 with AAC audio.
-  if (canPlay("mp4", it.video_codec, a ? "aac" : null)) return "remux";
+  if (!appleWebKit && canPlay("mp4", it.video_codec, a ? "aac" : null)) return "remux";
   return null;
 }
 

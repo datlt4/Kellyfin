@@ -1,5 +1,6 @@
 import { useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import Icon from "../components/Icon";
 import { api, authToken, fmtClock, img, mediaUrl, server, streamLabel, subLabel, type ItemDetail } from "../api";
 import {
   audioStreams, autoQuality, bandwidth, canCopyAudio, screenP, cueAt, defaultAudio, defaultSub, mseHls, nativeHls, originalMode, parseVtt,
@@ -23,6 +24,7 @@ function PlayerView(props: { id: string }) {
   const [item] = createResource(() => api<ItemDetail>(`/items/${props.id}`));
   let video!: HTMLVideoElement;
   let root!: HTMLDivElement;
+  let controls!: HTMLDivElement;
 
   const [mode, setMode] = createSignal<Mode>("direct");
   const [offset, setOffset] = createSignal(0); // media time at video.currentTime == 0 (remux starts mid-file)
@@ -289,6 +291,10 @@ function PlayerView(props: { id: string }) {
   const onPageHide = () => report(true);
 
   onMount(() => {
+    // Subtitles sit just above the controls, whose height depends on how many rows they wrap to.
+    const ro = new ResizeObserver(() => root.style.setProperty("--controls-h", `${controls.offsetHeight}px`));
+    ro.observe(controls);
+    onCleanup(() => ro.disconnect());
     window.addEventListener("keydown", onKey);
     window.addEventListener("pagehide", onPageHide);
     document.addEventListener("visibilitychange", onHide);
@@ -386,14 +392,14 @@ function PlayerView(props: { id: string }) {
       </Show>
 
       <div class="p-top">
-        <button class="icon" onClick={() => history.back()} aria-label="Back">←</button>
+        <button class="icon" onClick={() => history.back()} aria-label="Back"><Icon name="back" /></button>
         <div class="p-title">
           <span class="muted">{item()?.library_name}</span>
           <strong>{item()?.title}</strong>
         </div>
       </div>
 
-      <div class="p-bottom" onPointerUp={(e) => e.stopPropagation()}>
+      <div class="p-bottom" ref={controls} onPointerUp={(e) => e.stopPropagation()}>
         <div class="seek">
           <div class="seek-buf" style={{ width: `${bufferedPct()}%` }} />
           <div class="seek-fill" style={{ width: `${pct()}%` }} />
@@ -409,9 +415,9 @@ function PlayerView(props: { id: string }) {
           />
         </div>
         <div class="p-row">
-          <button class="icon" onClick={toggle} aria-label={playing() ? "Pause" : "Play"}>{playing() ? "❚❚" : "▶"}</button>
-          <button class="icon" onClick={() => seek(now() - 10)} aria-label="Back 10 seconds">↺</button>
-          <button class="icon" onClick={() => seek(now() + 10)} aria-label="Forward 10 seconds">↻</button>
+          <button class="icon" onClick={toggle} aria-label={playing() ? "Pause" : "Play"}><Icon name={playing() ? "pause" : "play"} size={26} /></button>
+          <button class="icon" onClick={() => seek(now() - 10)} aria-label="Back 10 seconds"><Icon name="back10" /></button>
+          <button class="icon" onClick={() => seek(now() + 10)} aria-label="Forward 10 seconds"><Icon name="fwd10" /></button>
           <span class="clock">{fmtClock(shown())} / {fmtClock(duration())}</span>
           <span class="grow" />
           <Show when={item()}>
@@ -435,10 +441,10 @@ function PlayerView(props: { id: string }) {
             </select>
           </Show>
           <Show when={item()?.next_id}>
-            <button class="icon" onClick={() => nav(`/play/${item()!.next_id}`, { replace: true })} aria-label="Next episode">⏭</button>
+            <button class="icon" onClick={() => nav(`/play/${item()!.next_id}`, { replace: true })} aria-label="Next episode"><Icon name="next" /></button>
           </Show>
-          <Show when={pipOk}><button class="icon" onClick={pip} aria-label="Picture in picture">⧉</button></Show>
-          <button class="icon" onClick={fullscreen} aria-label="Fullscreen">⛶</button>
+          <Show when={pipOk}><button class="icon" onClick={pip} aria-label="Picture in picture"><Icon name="pip" /></button></Show>
+          <button class="icon" onClick={fullscreen} aria-label="Fullscreen"><Icon name="fullscreen" /></button>
         </div>
         <span class="p-mode">
           {mode() === "direct" ? "Direct play" : mode() === "remux" ? "Remux" : `Transcode${levelP() ? ` ${levelP()}p` : ""}`}

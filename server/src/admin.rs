@@ -73,6 +73,7 @@ pub struct Info {
     libraries: i64,
     items: i64,
     users: i64,
+    /// Active hardware encoder, e.g. "VAAPI /dev/dri/renderD128" or "NVENC"; None = CPU.
     hw_device: Option<String>,
     in_docker: bool,
     sessions: Vec<Session>,
@@ -86,7 +87,10 @@ pub async fn info(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Info>
         libraries: sqlx::query_scalar(&count("libraries")).fetch_one(&st.db).await?,
         items: sqlx::query_scalar(&count("items")).fetch_one(&st.db).await?,
         users: sqlx::query_scalar(&count("users")).fetch_one(&st.db).await?,
-        hw_device: transcode::hw_device(&st).await,
+        hw_device: transcode::hw_device(&st).await.map(|h| match h {
+            transcode::Hw::Vaapi(dev) => format!("VAAPI {dev}"),
+            transcode::Hw::Nvenc => "NVENC".into(),
+        }),
         in_docker: std::path::Path::new("/.dockerenv").exists(),
         sessions: st.sessions.active(),
         transcodes: st.transcoder.list(),

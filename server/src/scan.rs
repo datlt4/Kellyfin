@@ -273,6 +273,7 @@ fn parse_probe(v: &Value) -> Probe {
                         "index": s["index"],
                         "type": s["codec_type"],
                         "codec": s["codec_name"],
+                        "tag": s["codec_tag_string"],
                         "profile": s["profile"],
                         "lang": s["tags"]["language"],
                         "title": s["tags"]["title"],

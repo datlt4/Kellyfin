@@ -135,7 +135,7 @@ function Dashboard() {
         <div><b>{info()?.libraries ?? "–"}</b><span>Libraries</span></div>
         <div><b>{info()?.items ?? "–"}</b><span>Videos</span></div>
         <div><b>{info()?.users ?? "–"}</b><span>Users</span></div>
-        <div><b>{info() ? (info()!.hw_device ? "VAAPI" : "CPU") : "–"}</b><span>Transcoding</span></div>
+        <div><b>{info() ? (info()!.hw_device?.split(" ")[0] ?? "CPU") : "–"}</b><span>Transcoding</span></div>
       </section>
       <section class="panel">
         <h2>Server</h2>
@@ -167,7 +167,7 @@ function Dashboard() {
                 <A href={`/item/${s.item_id}`}><strong>{s.title}</strong></A>
                 <span class="muted">
                   {s.user} · {fmtClock(s.position)}{s.duration ? ` / ${fmtClock(s.duration)}` : ""} · {s.mode || "?"}
-                  {job() ? ` · ${job()!.p}p ${job()!.hw ? "VAAPI" : "x264"}${job()!.paused ? " (throttled)" : ""}` : ""}
+                  {job() ? ` · ${job()!.p}p ${job()!.encoder}${job()!.paused ? " (throttled)" : ""}` : ""}
                 </span>
               </div>
             );
@@ -382,16 +382,18 @@ function Playback() {
       <h2>Transcoding</h2>
       <p class="muted">
         Used when a video cannot play as-is (HEVC/AV1 on some devices) or a lower quality is picked.
-        Currently: {info() ? (info()!.hw_device ? `VAAPI on ${info()!.hw_device}` : "software (x264)") : "…"}
+        Currently: {info() ? (info()!.hw_device ?? "software (x264)") : "…"}
       </p>
       <Show when={settings()}>
         <label>Hardware acceleration
           <select name="transcode.hwaccel" value={settings()!["transcode.hwaccel"] ?? "auto"}>
-            <option value="auto">VAAPI when available (AMD / Intel GPU)</option>
+            <option value="auto">Auto — NVIDIA, else AMD/Intel, else CPU</option>
+            <option value="nvenc">NVENC (NVIDIA GPU)</option>
+            <option value="vaapi">VAAPI (AMD / Intel GPU)</option>
             <option value="none">None — encode on the CPU</option>
           </select>
         </label>
-        <label>VAAPI device<input name="transcode.device" value={settings()!["transcode.device"] ?? "/dev/dri/renderD128"} /></label>
+        <label>VAAPI device (AMD / Intel)<input name="transcode.device" value={settings()!["transcode.device"] ?? "/dev/dri/renderD128"} /></label>
       </Show>
       <button class="btn primary">Save</button>
       <act.Note />

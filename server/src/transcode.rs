@@ -33,6 +33,25 @@ const IDLE_KILL: Duration = Duration::from_secs(90);
 /// (short side, video bitrate kbps)
 const LADDER: &[(u32, u32)] = &[(1080, 5000), (720, 2800), (480, 1400), (360, 800), (240, 450), (144, 250)];
 
+/// Hardware encoder; None everywhere means x264 on the CPU.
+#[derive(Clone, Debug)]
+pub enum Hw {
+    /// AMD / Intel through a DRM render node.
+    Vaapi(String),
+    /// NVIDIA (needs the NVIDIA container toolkit with the "video" capability).
+    Nvenc,
+}
+
+impl Hw {
+    fn name(hw: Option<&Hw>) -> &'static str {
+        match hw {
+            Some(Hw::Vaapi(_)) => "vaapi",
+            Some(Hw::Nvenc) => "nvenc",
+            None => "x264",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Variant {
     p: u32,
@@ -48,6 +67,7 @@ struct Job {
     last_req: Instant,
     paused: bool,
     hw: bool,
+    encoder: &'static str,
     seg_len: f64,
     child: Child,
     dir: PathBuf,
@@ -93,7 +113,7 @@ pub struct JobInfo {
     pub item_id: i64,
     pub p: u32,
     pub audio: i64,
-    pub hw: bool,
+    pub encoder: &'static str,
     pub position: f64,
     pub paused: bool,
 }
@@ -166,14 +186,14 @@ impl Transcoder {
                 item_id: *id,
                 p: j.variant.p,
                 audio: j.variant.audio,
-                hw: j.hw,
+                encoder: j.encoder,
                 position: j.last_seg as f64 * j.seg_len,
                 paused: j.paused,
             })
             .collect()
     }
 
-    fn spawn(self: &Arc<Self>, item: i64, src: &Source, v: Variant, start: u32, hw: Option<&str>) -> anyhow::Result<Job> {
+    fn spawn(self: &Arc<Self>, item: i64, src: &Source, v: Variant, start: u32, hw: Option<&Hw>) -> anyhow::Result<Job> {
         let generation = {
             let mut g = self.next_gen.lock().unwrap();
             *g += 1;
@@ -188,9 +208,16 @@ impl Transcoder {
 
         let mut cmd = Command::new("ffmpeg");
         cmd.args(["-v", "error", "-nostdin"]);
-        // Decoding stays on the CPU: on Vega it beats VAAPI decode (measured 3.9s vs 6.0s per 20s of HEVC 1080p).
-        if let Some(dev) = hw {
-            cmd.args(["-init_hw_device", &format!("vaapi=va:{dev}"), "-filter_hw_device", "va"]);
+        match hw {
+            // Decoding stays on the CPU: on Vega it beats VAAPI decode (measured 3.9s vs 6.0s per 20s of HEVC 1080p).
+            Some(Hw::Vaapi(dev)) => {
+                cmd.args(["-init_hw_device", &format!("vaapi=va:{dev}"), "-filter_hw_device", "va"]);
+            }
+            // NVDEC decodes, frames come back to system memory for scaling (falls back to CPU decode by itself).
+            Some(Hw::Nvenc) => {
+                cmd.args(["-hwaccel", "cuda"]);
+            }
+            None => {}
         }
         // copyts keeps source timestamps, so segments from different runs line up on one timeline.
         cmd.args(["-ss", &format!("{at:.3}"), "-copyts", "-start_at_zero"])
@@ -201,11 +228,21 @@ impl Transcoder {
             cmd.args(["-map", &format!("0:{}", v.audio), "-c:a", "aac", "-ac", "2", "-b:a", "160k"]);
         }
         match hw {
-            Some(_) => cmd.args([
+            Some(Hw::Vaapi(_)) => cmd.args([
                 "-vf",
                 &format!("format=nv12,hwupload,scale_vaapi=w={w}:h={h}:format=nv12"),
                 "-c:v",
                 "h264_vaapi",
+            ]),
+            Some(Hw::Nvenc) => cmd.args([
+                "-vf",
+                &format!("scale={w}:{h},format=yuv420p"),
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "p4",
+                "-forced-idr",
+                "1",
             ]),
             None => cmd.args([
                 "-vf",
@@ -226,10 +263,11 @@ impl Transcoder {
             .arg(dir.join("%d.ts"))
             .arg(dir.join("ff.m3u8"))
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            // Into the container log; a pipe nobody reads would stall ffmpeg once full.
+            .stderr(Stdio::inherit())
             .kill_on_drop(true);
         let child = cmd.spawn()?;
-        tracing::info!("transcode item {item} {}p audio {} from {at}s ({})", v.p, v.audio, if hw.is_some() { "vaapi" } else { "x264" });
+        tracing::info!("transcode item {item} {}p audio {} from {at}s ({})", v.p, v.audio, Hw::name(hw));
 
         let job = Job {
             variant: v,
@@ -239,6 +277,7 @@ impl Transcoder {
             last_req: Instant::now(),
             paused: false,
             hw: hw.is_some(),
+            encoder: Hw::name(hw),
             seg_len,
             child,
             dir,
@@ -270,7 +309,7 @@ impl Transcoder {
     }
 
     /// Returns the path of segment `n`, starting or restarting the encoder as needed.
-    async fn segment(self: &Arc<Self>, item: i64, src: &Source, v: Variant, n: u32, hw: Option<String>) -> anyhow::Result<PathBuf> {
+    async fn segment(self: &Arc<Self>, item: i64, src: &Source, v: Variant, n: u32, hw: Option<Hw>) -> anyhow::Result<PathBuf> {
         let mut generation;
         {
             let mut jobs = self.jobs.lock().unwrap();
@@ -280,7 +319,7 @@ impl Transcoder {
             });
             if !reuse {
                 jobs.remove(&item);
-                let job = self.spawn(item, src, v, n, hw.as_deref())?;
+                let job = self.spawn(item, src, v, n, hw.as_ref())?;
                 jobs.insert(item, job);
             }
             let j = jobs.get_mut(&item).unwrap();
@@ -317,7 +356,7 @@ impl Transcoder {
                 // VAAPI can fail on odd inputs: retry once in software.
                 if !ok && was_hw && nothing_made && !retried_sw {
                     retried_sw = true;
-                    tracing::warn!("vaapi transcode failed for item {item}, retrying with x264");
+                    tracing::warn!("{} transcode failed for item {item}, retrying with x264", Hw::name(hw.as_ref()));
                     let mut jobs = self.jobs.lock().unwrap();
                     jobs.remove(&item);
                     let job = self.spawn(item, src, v, n, None)?;
@@ -375,13 +414,19 @@ async fn source(st: &AppState, id: i64) -> ApiResult<Source> {
     })
 }
 
-/// VAAPI device to use, or None for software encoding (setting `transcode.hwaccel`).
-pub async fn hw_device(st: &AppState) -> Option<String> {
+/// Encoder from the `transcode.hwaccel` setting: auto (NVENC, else VAAPI, when present) | nvenc | vaapi | none.
+pub async fn hw_device(st: &AppState) -> Option<Hw> {
     let mode = crate::settings::get(&st.db, "transcode.hwaccel").await.unwrap_or_else(|| "auto".into());
     let dev = crate::settings::get(&st.db, "transcode.device").await.unwrap_or_else(|| "/dev/dri/renderD128".into());
+    // The NVIDIA runtime exposes this node only when a GPU was handed to the container.
+    let nvidia = FsPath::new("/dev/nvidiactl").exists();
+    let vaapi = FsPath::new(&dev).exists();
     match mode.as_str() {
         "none" => None,
-        _ if FsPath::new(&dev).exists() => Some(dev),
+        "nvenc" if nvidia => Some(Hw::Nvenc),
+        "vaapi" if vaapi => Some(Hw::Vaapi(dev)),
+        "auto" if nvidia => Some(Hw::Nvenc),
+        "auto" if vaapi => Some(Hw::Vaapi(dev)),
         _ => None,
     }
 }

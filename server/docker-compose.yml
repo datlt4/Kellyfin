@@ -13,6 +13,14 @@ services:
       - /dev/dri:/dev/dri
     group_add:
       - "110"
+    # NVIDIA GPU for NVENC instead: install nvidia-container-toolkit on the host, then uncomment.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu, video]
     ports:
       - "${KELLYFIN_PORT:-8024}:8080"
     environment:

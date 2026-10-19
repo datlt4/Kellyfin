@@ -123,6 +123,19 @@ pub async fn remux(State(st): State<AppState>, _u: User, Path(id): Path<i64>, Qu
         .into_response())
 }
 
+/// FourCC of the first video stream, e.g. "hvc1" / "hev1" / "avc1".
+pub async fn video_tag(path: &str) -> Option<String> {
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_tag_string", "-of", "csv=p=0"])
+        .arg(format!("file:{path}"))
+        .kill_on_drop(true)
+        .output()
+        .await
+        .ok()?;
+    let t = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (!t.is_empty()).then_some(t)
+}
+
 /// Size of the MP4 index (moov). Browsers fetch it whole before the first frame.
 pub fn mp4_index_size(path: &str) -> Option<u64> {
     use std::io::{Read, Seek, SeekFrom};
