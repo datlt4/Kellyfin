@@ -6,7 +6,9 @@ mod images;
 mod jellyfin;
 mod manifest;
 mod scan;
+mod settings;
 mod stream;
+mod transcode;
 mod util;
 
 use anyhow::{bail, Context};
@@ -34,6 +36,7 @@ pub struct AppState {
     pub cfg: Arc<Config>,
     pub images: PathBuf,
     pub scanner: Arc<scan::Scanner>,
+    pub transcoder: Arc<transcode::Transcoder>,
 }
 
 /// Value of `--name VALUE`.
@@ -92,7 +95,8 @@ async fn serve(cfg: Config, db: SqlitePool, images: PathBuf) -> anyhow::Result<(
     auth::ensure_admin(&db).await?;
     let listener = tokio::net::TcpListener::bind(&cfg.addr).await?;
     tracing::info!("listening on {}", cfg.addr);
-    let st = AppState { db, cfg: Arc::new(cfg), images, scanner: Default::default() };
+    let transcoder = transcode::Transcoder::new(cfg.data.join("transcode"));
+    let st = AppState { db, cfg: Arc::new(cfg), images, scanner: Default::default(), transcoder };
     axum::serve(listener, api::router(st)).with_graceful_shutdown(shutdown()).await?;
     Ok(())
 }

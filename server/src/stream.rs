@@ -148,6 +148,17 @@ pub fn mp4_index_size(path: &str) -> Option<u64> {
     None
 }
 
+#[derive(Deserialize)]
+pub struct SpeedQ {
+    bytes: usize,
+}
+
+/// Filler bytes for the client to measure its bandwidth before picking a transcode quality.
+pub async fn speedtest(_u: User, Query(q): Query<SpeedQ>) -> Response {
+    let body = vec![0u8; q.bytes.min(8 << 20)];
+    ([(header::CONTENT_TYPE, "application/octet-stream"), (header::CACHE_CONTROL, "no-store")], body).into_response()
+}
+
 #[derive(Serialize, Clone)]
 pub struct SubTrack {
     /// "e<stream index>" embedded, "x<n>" external file.

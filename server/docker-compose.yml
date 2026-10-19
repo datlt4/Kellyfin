@@ -8,6 +8,11 @@ services:
     container_name: kellyfin
     restart: unless-stopped
     user: "1000:1000"
+    # AMD/Intel GPU for VAAPI transcoding; 110 = host "render" group.
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "110"
     ports:
       - "${KELLYFIN_PORT:-8024}:8080"
     environment:

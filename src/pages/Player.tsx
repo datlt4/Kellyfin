@@ -1,7 +1,12 @@
 import { useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { api, authToken, fmtClock, img, mediaUrl, server, streamLabel, subLabel, type ItemDetail } from "../api";
-import { audioStreams, canCopyAudio, cueAt, defaultAudio, defaultSub, parseVtt, pickMode, remember, subLang, type Cue, type Mode } from "../playback";
+import {
+  audioStreams, autoQuality, bandwidth, canCopyAudio, screenP, cueAt, defaultAudio, defaultSub, mseHls, nativeHls, originalMode, parseVtt,
+  preferredQuality, qualities, remember, subLang, type Cue, type Mode, type Quality,
+} from "../playback";
+
+type HlsT = import("hls.js").default;
 
 const HIDE_MS = 3000;
 const REPORT_MS = 10000;
@@ -32,6 +37,9 @@ function PlayerView(props: { id: string }) {
   const [ui, setUi] = createSignal(true);
   const [error, setError] = createSignal("");
   const [upNext, setUpNext] = createSignal<number | null>(null);
+  const [quality, setQuality] = createSignal<Quality>("orig");
+  const [levelP, setLevelP] = createSignal<number | null>(null); // rendition hls.js is playing
+  let hls: HlsT | null = null;
 
   const duration = () => item()?.duration ?? 0;
   // While a new stream is loading, the position is where we are going, not the old stream's.
@@ -46,11 +54,10 @@ function PlayerView(props: { id: string }) {
     pendingAt = at;
     setError("");
     setWaiting(true);
-    if (mode() === "unsupported") {
-      setError(`${it.video_codec?.toUpperCase() ?? "This"} video needs transcoding, which arrives with P3.`);
-      pendingAt = null;
-      return;
-    }
+    hls?.destroy();
+    hls = null;
+    setLevelP(null);
+    if (mode() === "hls") return loadHls(at, gen);
     if (mode() === "direct") {
       setOffset(0);
       pendingSkip = at;
@@ -68,10 +75,97 @@ function PlayerView(props: { id: string }) {
     video.play().catch(() => setPlaying(false));
   }
 
+  /** Server transcode; hls.js on MSE browsers, the native player on iOS. */
+  async function loadHls(at: number, gen: number) {
+    const it = item()!;
+    setOffset(0);
+    const master = mediaUrl(`/items/${it.id}/hls/master.m3u8`, { audio: audio() ?? -1 });
+    const q = quality();
+    if (!mseHls()) {
+      if (!nativeHls()) return fail("This device cannot play transcoded video.");
+      pendingSkip = at;
+      // Native HLS has no level API: a fixed quality loads that rendition's playlist.
+      video.src = typeof q === "number" ? mediaUrl(`/items/${it.id}/hls/${q}/${audio() ?? -1}/index.m3u8`) : master;
+      video.play().catch(() => setPlaying(false));
+      return;
+    }
+    // hls.js ABR misreads transcoder start-up time as a slow network and thrashes between rungs,
+    // and every rung change restarts the encoder. So levels are always fixed; "auto" picks one up front.
+    const [{ default: Hls }, p] = await Promise.all([
+      import("hls.js/light"),
+      typeof q === "number" ? q : bandwidth(server(), authToken() ?? "").then((bps) => autoQuality(qualities(it), bps, screenP(root))),
+    ]);
+    if (gen !== loadGen) return;
+    const rungs = qualities(it);
+    // hls.js orders levels by ascending bitrate.
+    const h = new Hls({ startPosition: at, maxBufferLength: 30, backBufferLength: 60, startLevel: rungs.length - 1 - rungs.indexOf(p) });
+    hls = h;
+    h.on(Hls.Events.MANIFEST_PARSED, () => {
+      h.currentLevel = levelOf(p);
+      video.play().catch(() => setPlaying(false));
+    });
+    h.on(Hls.Events.LEVEL_SWITCHED, (_e, d) => {
+      const l = h.levels[d.level];
+      setLevelP(l ? Math.min(l.width, l.height) : null);
+    });
+    h.on(Hls.Events.ERROR, (_e, d) => {
+      if (!d.fatal) return;
+      if (d.type === Hls.ErrorTypes.NETWORK_ERROR) h.startLoad();
+      else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError();
+      else fail("Transcoding failed.");
+    });
+    h.loadSource(master);
+    h.attachMedia(video);
+  }
+
+  const levelOf = (p: number) => hls?.levels.findIndex((l) => Math.min(l.width, l.height) === p) ?? -1;
+
+  // Auto steps down one rung after two stalls within a minute of steady playback.
+  let stalls: number[] = [];
+  function onStall() {
+    if (!hls || quality() !== "auto" || pendingAt !== null || !playing()) return;
+    const t = Date.now();
+    stalls = [...stalls.filter((s) => t - s < 60_000), t];
+    const rungs = qualities(item()!);
+    const i = rungs.indexOf(levelP() ?? rungs[rungs.length - 1]);
+    if (stalls.length >= 2 && i >= 0 && i < rungs.length - 1) {
+      stalls = [];
+      hls.currentLevel = levelOf(rungs[i + 1]);
+    }
+  }
+
+  function fail(msg: string) {
+    pendingAt = null;
+    setWaiting(false);
+    setError(msg);
+  }
+
+  /** Original file when the browser can play it, else a transcode. */
+  function modeFor(it: ItemDetail, a: number | null, q: Quality): Mode {
+    const m = (q === "orig" && originalMode(it, a)) || "hls";
+    if (m === "hls" && q === "orig") setQuality("auto"); // original not playable here
+    return m;
+  }
+
+  function changeQuality(v: string) {
+    const q: Quality = v === "orig" || v === "auto" ? v : Number(v);
+    const it = item()!;
+    setQuality(q);
+    remember("quality", String(q));
+    const m = modeFor(it, audio(), q);
+    if (m === "hls" && hls && typeof q === "number") {
+      // Same stream, different rendition: hls.js switches without reloading.
+      hls.currentLevel = levelOf(q);
+      return;
+    }
+    setMode(m);
+    load(now());
+  }
+
   function seek(t: number) {
     t = Math.max(0, Math.min(t, Math.max(0, duration() - 1)));
     setTime(t);
-    if (mode() === "direct") {
+    if (mode() !== "remux") {
       video.currentTime = t;
       return;
     }
@@ -96,7 +190,10 @@ function PlayerView(props: { id: string }) {
     const a = sp.audio !== undefined ? Number(sp.audio) : defaultAudio(it);
     setAudio(a);
     setSub(typeof sp.sub === "string" ? sp.sub : defaultSub(it));
-    setMode(pickMode(it, a));
+    const q = preferredQuality();
+    // A remembered height the file does not have falls back to adaptive.
+    setQuality(typeof q === "number" && !qualities(it).includes(q) ? "auto" : q);
+    setMode(modeFor(it, a, quality()));
     const start = sp.t !== undefined ? Number(sp.t) : it.played ? 0 : it.position;
     load(start > 5 ? start : 0);
     if ("mediaSession" in navigator) {
@@ -128,7 +225,7 @@ function PlayerView(props: { id: string }) {
     const at = now();
     setAudio(index);
     remember("audioLang", audioStreams(it).find((s) => s.index === index)?.lang ?? "");
-    setMode(pickMode(it, index));
+    setMode(modeFor(it, index, quality()));
     load(at);
   }
 
@@ -213,6 +310,7 @@ function PlayerView(props: { id: string }) {
       clearInterval(timer);
       clearTimeout(hideTimer);
       clearInterval(nextTimer);
+      hls?.destroy();
       video.removeAttribute("src");
       video.load(); // stops the download / server-side remux
     });
@@ -251,8 +349,8 @@ function PlayerView(props: { id: string }) {
         poster={item() ? img(item()!, "l") : undefined}
         onPlay={() => { setPlaying(true); poke(); }}
         onPause={() => { setPlaying(false); setUi(true); report(); }}
-        onWaiting={() => setWaiting(true)}
-        onPlaying={() => setWaiting(false)}
+        onWaiting={() => { setWaiting(true); onStall(); }}
+        onPlaying={() => { setWaiting(false); pendingAt = null; }}
         onCanPlay={() => setWaiting(false)}
         onSeeked={() => report()}
         onLoadedMetadata={() => {
@@ -262,13 +360,14 @@ function PlayerView(props: { id: string }) {
         }}
         onEnded={onEnded}
         onError={() => {
-          if (!video.getAttribute("src")) return;
+          if (!video.getAttribute("src") || hls) return; // hls.js reports its own errors
+          const at = now();
           pendingAt = null;
-          if (mode() === "direct" && item()) {
-            // Browser refused the file after all: fall back to a server remux.
-            setMode("remux");
-            load(now());
-          } else setError("Playback failed.");
+          // Browser refused the file after all: fall back to a remux, then to a transcode.
+          if (mode() === "direct") setMode("remux");
+          else if (mode() === "remux") setMode("hls");
+          else return fail("Playback failed.");
+          load(at);
         }}
         onPointerUp={onTap}
       />
@@ -314,6 +413,13 @@ function PlayerView(props: { id: string }) {
           <button class="icon" onClick={() => seek(now() + 10)} aria-label="Forward 10 seconds">↻</button>
           <span class="clock">{fmtClock(shown())} / {fmtClock(duration())}</span>
           <span class="grow" />
+          <Show when={item()}>
+            <select value={String(quality())} onChange={(e) => changeQuality(e.currentTarget.value)} aria-label="Quality">
+              <Show when={originalMode(item()!, audio())}><option value="orig">Original</option></Show>
+              <option value="auto">Auto{mode() === "hls" && quality() === "auto" && levelP() ? ` (${levelP()}p)` : ""}</option>
+              <For each={qualities(item()!)}>{(p) => <option value={p}>{p}p</option>}</For>
+            </select>
+          </Show>
           <Show when={item() && audioStreams(item()!).length > 1}>
             <select value={audio() ?? ""} onChange={(e) => changeAudio(Number(e.currentTarget.value))} aria-label="Audio">
               <For each={audioStreams(item()!)}>{(s) => <option value={s.index}>{streamLabel(s)}</option>}</For>
@@ -333,7 +439,9 @@ function PlayerView(props: { id: string }) {
           <Show when={pipOk}><button class="icon" onClick={pip} aria-label="Picture in picture">⧉</button></Show>
           <button class="icon" onClick={fullscreen} aria-label="Fullscreen">⛶</button>
         </div>
-        <span class="p-mode">{mode() === "direct" ? "Direct play" : mode() === "remux" ? "Remux" : ""}</span>
+        <span class="p-mode">
+          {mode() === "direct" ? "Direct play" : mode() === "remux" ? "Remux" : `Transcode${levelP() ? ` ${levelP()}p` : ""}`}
+        </span>
       </div>
     </div>
   );

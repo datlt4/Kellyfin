@@ -1,6 +1,8 @@
 import type { ItemDetail, Stream, SubTrack } from "./api";
 
-export type Mode = "direct" | "remux" | "unsupported";
+export type Mode = "direct" | "remux" | "hls";
+/** "orig": the file itself (direct/remux); "auto": adaptive transcode; number: fixed transcode height. */
+export type Quality = "orig" | "auto" | number;
 
 // A bigger MP4 index delays the first frame by seconds over VPN; a copy-remux starts at once.
 const MAX_DIRECT_INDEX = 4 * 1024 * 1024;
@@ -39,16 +41,61 @@ export const nativeAudio = (it: ItemDetail) => {
 
 /**
  * Direct play when the browser decodes the file as-is with the wanted audio track;
- * otherwise copy-remux on the server (cheap), since the video codec itself is playable.
+ * otherwise copy-remux on the server (cheap) when the video codec itself is playable; else null (transcode).
  */
-export function pickMode(it: ItemDetail, audio: number | null): Mode {
+export function originalMode(it: ItemDetail, audio: number | null): "direct" | "remux" | null {
   const a = audioStreams(it).find((s) => s.index === audio) ?? nativeAudio(it);
   const container = ["mp4", "m4v", "mov"].includes(it.ext) ? "mp4" : it.ext === "webm" ? "webm" : null;
   const smallIndex = (it.index_size ?? 0) <= MAX_DIRECT_INDEX;
   if (container && smallIndex && a?.index === nativeAudio(it)?.index && canPlay(container, it.video_codec, a?.codec)) return "direct";
   // Remux output is MP4 with AAC audio.
   if (canPlay("mp4", it.video_codec, a ? "aac" : null)) return "remux";
-  return "unsupported";
+  return null;
+}
+
+/** Same rungs as the server ladder: the source size (max 1080) and every standard size below it. */
+export function qualities(it: ItemDetail): number[] {
+  const short = Math.min(it.width ?? 0, it.height ?? 0, 1080);
+  if (!short) return [];
+  return [short, ...[1080, 720, 480, 360, 240, 144].filter((p) => p < short)];
+}
+
+// Mirrors the server ladder (video kbps) plus 160k audio.
+const KBPS: [number, number][] = [[1080, 5000], [720, 2800], [480, 1400], [360, 800], [240, 450], [144, 250]];
+const kbpsFor = (p: number) => ([...KBPS].reverse().find(([lp]) => lp >= p)?.[1] ?? 5000) + 160;
+
+/** Highest rung that fits the screen and the measured bandwidth (with headroom); the lowest one otherwise. */
+export function autoQuality(rungs: number[], bps: number, screenP: number): number {
+  return rungs.find((p) => p <= screenP * 1.1 && kbpsFor(p) * 1000 * 1.4 <= bps) ?? rungs[rungs.length - 1];
+}
+
+/** Short side of the player in device pixels. */
+export const screenP = (el: HTMLElement) =>
+  Math.min(el.clientHeight, (el.clientWidth * 9) / 16) * (window.devicePixelRatio || 1);
+
+let measured: { bps: number; at: number } | null = null;
+/** Throughput to the server, measured with a 2 MB download and reused for 10 minutes. */
+export async function bandwidth(base: string, token: string): Promise<number> {
+  if (measured && Date.now() - measured.at < 600_000) return measured.bps;
+  const bytes = 2_000_000;
+  const t0 = performance.now();
+  try {
+    const r = await fetch(`${base}/api/speedtest?bytes=${bytes}`, { headers: { Authorization: `Bearer ${token}` } });
+    await r.arrayBuffer();
+  } catch {
+    return 3_000_000;
+  }
+  const bps = (bytes * 8) / ((performance.now() - t0) / 1000);
+  measured = { bps, at: Date.now() };
+  return bps;
+}
+
+export const nativeHls = () => probe.canPlayType("application/vnd.apple.mpegurl") !== "";
+export const mseHls = () => "MediaSource" in window || "ManagedMediaSource" in window;
+
+export function preferredQuality(): Quality {
+  const q = pref("quality");
+  return q === "auto" ? "auto" : q && /^\d+$/.test(q) ? Number(q) : "orig";
 }
 
 const pref = (key: string) => {

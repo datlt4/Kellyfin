@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+ && apt-get install -y --no-install-recommends ffmpeg mesa-va-drivers ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /kellyfin /usr/local/bin/kellyfin
 COPY --from=web /app/dist /web

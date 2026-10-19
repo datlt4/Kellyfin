@@ -1,7 +1,7 @@
 use crate::{
     auth::{self, Admin, User},
     error::{ApiError, ApiResult},
-    scan, stream, AppState,
+    scan, settings, stream, transcode, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -35,12 +35,16 @@ pub fn router(st: AppState) -> Router {
         .route("/items/{id}/progress", post(stream::progress))
         .route("/items/{id}/userdata", post(stream::user_data))
         .route("/admin/scan", get(scan_status).post(scan_start))
+        .route("/admin/settings", get(settings::list).put(settings::update))
+        .route("/items/{id}/hls/master.m3u8", get(transcode::master))
         .layer(CompressionLayer::new());
     // Video bodies must not go through compression.
     let media = Router::new()
         .route("/items/{id}/file", get(stream::file))
         .route("/items/{id}/remux", get(stream::remux))
-        .route("/items/{id}/keyframe", get(stream::keyframe));
+        .route("/items/{id}/keyframe", get(stream::keyframe))
+        .route("/speedtest", get(stream::speedtest))
+        .route("/items/{id}/hls/{p}/{audio}/{file}", get(transcode::hls_file));
     let api = api.merge(media).layer(CorsLayer::permissive());
 
     // Image URLs carry ?v=<version>, so they can be cached forever.
