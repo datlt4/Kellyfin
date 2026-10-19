@@ -1,6 +1,7 @@
-# Desktop build environment: Linux bundles (glibc 2.35, so Ubuntu 22.04+ runs them) and
-# Windows installers cross-compiled with cargo-xwin + NSIS.
-FROM ubuntu:22.04
+# Desktop build environment. BASE=ubuntu:22.04 for Linux bundles (glibc 2.35, so Ubuntu 22.04+ runs them);
+# BASE=ubuntu:24.04 for Windows installers (cargo-xwin + NSIS 3.09: 3.08 lacks Win/RestartManager.nsh).
+ARG BASE=ubuntu:22.04
+FROM ${BASE}
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl build-essential pkg-config file xz-utils git \

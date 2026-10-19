@@ -10,9 +10,10 @@ V=$(node -p "require('./package.json').version")
 OUT=dist-desktop
 mkdir -p "$OUT"
 
-in_docker() { # platform, command
-  local img="kellyfin-desktop-builder:${1#linux/}"
-  docker build -q --platform "$1" -t "$img" -f scripts/desktop.Dockerfile scripts >/dev/null
+in_docker() { # platform, command, [base image]
+  local base=${3:-ubuntu:22.04}
+  local img="kellyfin-desktop-builder:${1#linux/}-${base#ubuntu:}"
+  docker build -q --platform "$1" --build-arg BASE="$base" -t "$img" -f scripts/desktop.Dockerfile scripts >/dev/null
   # node_modules lives in a volume so the host's (other OS/arch binaries) is left alone;
   # outputs are handed back to the calling user.
   docker run --rm --platform "$1" -v "$PWD:/src" -w /src \
@@ -33,7 +34,7 @@ case "${1:-}" in
     ;;
   windows)
     for T in x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
-      in_docker linux/amd64 "npx tauri build --runner cargo-xwin --target $T --bundles nsis"
+      in_docker linux/amd64 "npx tauri build --runner cargo-xwin --target $T --bundles nsis" ubuntu:24.04
       collect "src-tauri/target/$T/release/bundle" "*.exe"
       A=$([ "$T" = x86_64-pc-windows-msvc ] && echo x64 || echo arm64)
       cp "src-tauri/target/$T/release/kellyfin.exe" "$OUT/kellyfin_${V}_windows_${A}_portable.exe"

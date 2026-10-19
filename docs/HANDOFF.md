@@ -98,7 +98,7 @@ scripts/
   build-desktop.sh      linux | linux-arm64 | windows | macos
   desktop.Dockerfile    Ubuntu 22.04 build image (glibc 2.35) with cargo-xwin + NSIS
   publish-release.sh    branch release/vX.Y.Z + tag + GitHub release + upload dist-*/
-.github/workflows/      build.yml, release.yml, mobile.yml (Actions currently DISABLED, see §5)
+.github/workflows/      build.yml, release.yml, mobile.yml (see §5)
 ```
 
 ---
@@ -219,35 +219,42 @@ SemVer `0.MINOR.PATCH`: a minor per finished phase/feature set, a patch per fix 
 it** (owner's rule). Use `scripts/set-version.sh X.Y.Z`; it updates `package.json`, both `Cargo.toml`/`Cargo.lock`,
 `tauri.conf.json`. Images: Docker Hub `hienanh/kellyfin` (`:dev` + `:X.Y.Z-dev` from dev, `:latest` + `:X.Y.Z` from main).
 
-### GitHub Actions is disabled
+### CI is the build system
 
-The owner disabled Actions after an Actions outage (2026-10-19). The workflows are kept and were working
-(`build.yml` passed: tests, Tauri check, multi-arch image). Until Actions is re-enabled, **everything is built
-locally**:
+GitHub Actions builds everything (it was briefly disabled during an Actions outage on 2026-10-19 and is back on):
+- `build.yml` — every push to `dev`/`main`: web build, server tests, Tauri tests, multi-arch image
+  (amd64 and arm64 on native runners, merged into one manifest) pushed to `hienanh/kellyfin`.
+- `release.yml` — push to `main`: if `v<package.json version>` has no tag yet, creates `release/vX.Y.Z`, the tag,
+  desktop installers (Linux x64/arm64, Windows x64/x86/arm64, macOS arm64/x64), and calls `mobile.yml`.
+- `mobile.yml` — Android APK (signed with secrets `ANDROID_KEYSTORE_B64/PASS`, else a throwaway key) and an
+  unsigned iOS IPA; push to `ci/mobile` to test it alone (assets go to the `mobile-dev` pre-release).
+
+Deploy the server after CI: `ssh mini-wg 'cd ~/Software/kellyfin && docker compose pull && docker compose up -d'`.
+
+Local fallback only if Actions is unavailable (the owner prefers CI — ask first):
 
 ```sh
+# Rust without a local toolchain (koi-pc)
+docker run --rm -u $(id -u):$(id -g) -e CARGO_HOME=/cargo -v <cache>:/cargo -v $PWD/server:/src -w /src rust:1-bookworm cargo test
+
 # Server image -> mini PC (no Docker Hub push)
 docker build -f server/Dockerfile -t hienanh/kellyfin:dev .
 docker save hienanh/kellyfin:dev | gzip -1 | ssh mini-wg 'gunzip | docker load && cd ~/Software/kellyfin && docker compose up -d'
 
-# Rust without a local toolchain (koi-pc)
-docker run --rm -u $(id -u):$(id -g) -e CARGO_HOME=/cargo -v <cache>:/cargo -v $PWD/server:/src -w /src rust:1-bookworm cargo test
-
 # Mobile, on mabu (repo clone: ~/Downloads/Miscellaneous/Kellyfin)
-scripts/build-mobile.sh android   # signed APK -> dist-mobile/
-scripts/build-mobile.sh ios       # unsigned IPA -> dist-mobile/
+scripts/build-mobile.sh android   # signed APK -> dist-mobile/ (verified: builds)
+scripts/build-mobile.sh ios       # unsigned IPA -> dist-mobile/ (not run to completion yet)
 
 # Desktop
-scripts/build-desktop.sh linux    # koi-pc, Docker
-scripts/build-desktop.sh windows  # koi-pc, Docker, cargo-xwin (x64 + arm64 NSIS + portable exe)
-scripts/build-desktop.sh macos    # mabu, universal .dmg + .app.tar.gz
-scripts/build-desktop.sh linux-arm64  # needs QEMU binfmt on the host (not installed yet)
+scripts/build-desktop.sh linux    # koi-pc, Docker Ubuntu 22.04 (verified: deb, rpm, AppImage)
+scripts/build-desktop.sh windows  # koi-pc, Docker Ubuntu 24.04 + cargo-xwin (NSIS 3.08 lacked RestartManager.nsh)
+scripts/build-desktop.sh macos    # mabu, universal .dmg + .app.tar.gz (not run yet)
+scripts/build-desktop.sh linux-arm64  # needs QEMU binfmt on the host (not installed)
 
-# Publish: copy mabu's dist-mobile/ next to dist-desktop/, then
-scripts/publish-release.sh        # release/vX.Y.Z branch, tag, release, uploads
+# Publish local builds: copy mabu's dist-mobile/ next to dist-desktop/, then
+scripts/publish-release.sh        # release/vX.Y.Z branch, tag, release, uploads (token: ~/.config/kellyfin/github-token)
 ```
 
-`release.yml` (when Actions is back) does the same on every push to `main` whose version has no tag yet.
 
 ### IPA re-sign (mabu, `~/Downloads/Miscellaneous/ipa-resign-dashboard`, see its `docs/JOB-SPEC.md`)
 
@@ -268,10 +275,10 @@ the A8 Star is the Samsung G885F). A free Apple ID allows only 3 sideloaded apps
 
 ## 6. Open items
 
-1. **Finish P5**: builds were running when this was written (APK + IPA on mabu, Linux + Windows on koi-pc);
-   then macOS universal, `publish-release.sh` for v0.6.1, activate the two re-sign jobs, install on the
-   iPhone and the A8 Star.
-2. **Linux arm64 desktop**: install QEMU binfmt on koi-pc (privileged, ask the owner) or build on an arm64 host.
+1. **Finish P5**: add repo secrets `ANDROID_KEYSTORE_B64/PASS` (keystore in `~/.config/kellyfin/`), merge `dev`
+   into `main` to publish v0.6.1 through `release.yml`, then activate the two re-sign jobs on mabu and install on
+   the iPhone and the A8 Star.
+2. **Linux arm64 desktop** is covered by CI (`ubuntu-22.04-arm`); locally it would need QEMU binfmt.
 3. **Verify on real devices**: hev1/remux rules on iOS, header proxy in the apps, Android WebView fullscreen
    and PiP (may need a native plugin), Chromecast/AirPlay.
 4. Android/iOS apps have no in-app updater (Kermius uses the Tauri updater with signing keys; not set up here).
