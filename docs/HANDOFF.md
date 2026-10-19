@@ -369,8 +369,7 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 ## 6. Open items
 
 1. **Run the repair on the server** (Dashboard → Check → Fix): 6 wrong Jumong items; review the 39 others.
-1b. Confirm the `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)` secrets are set, or `release.yml` fails (desktop bundles and
-    latest.json need them). Start an upscale worker permanently on koi-pc (`upscaler/docker-compose.yml`) when
+1b. Start an upscale worker permanently on koi-pc (`upscaler/docker-compose.yml`) when
     trained models exist.
 2. **Finish P5**: v1.0.0 is out and installed on the A8 Star; the iOS job needs one successful run with the
    iPhone reachable (unlock it near mabu or plug USB, then "Resign ngay"); first iOS install also tests the
@@ -411,7 +410,7 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `bd4c505` | 0.7.0 | icon controls with menus, dual subtitles, search icon redrawn | Hand-written SVG paths can render wrong: render every icon to a contact sheet to check. |
 | `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
-| (release) | 2.0.0 | in-app updates (signed desktop updater, APK link, iOS notice), AI upscale pipeline + worker, back button on the server picker, Jellyfin retired | Drive the updater from Rust commands (no extra webview permissions); the upscale worker pulls work so the GPU PC needs no inbound access. |
+| `80e2f07` | 2.0.0 | in-app updates (signed desktop updater, APK link, iOS notice), AI upscale pipeline + worker, back button on the server picker, Jellyfin retired | Drive the updater from Rust commands (no extra webview permissions); the upscale worker pulls work so the GPU PC needs no inbound access. Released: 34 assets incl. 13 `.sig` and `latest.json` covering all 20 desktop platform keys; A8 Star updated 1.5.0 → 2.0.0. |
 | `2cdef6b` | 1.5.0 | device brightness/volume/landscape fullscreen in the apps, centre player controls, top-bar safe-area fix, one view button | A fixed-height bar with safe-area padding squeezes its content; CSS rules declared earlier lose to later ones of equal specificity (twice). |
 | `8254c7f` | 1.4.0 | Jellyfin-style More menu instead of the sidebar, ← button, Android back + double-back exit, grid/list view | Measuring which chips fit must not depend on a button that the result itself shows or hides (it clipped the last chip). Released (20 assets, CI green); A8 Star updated 1.2.0 → 1.4.0. |
 | `80c47a4` | 1.3.0 | library sidebar (☰ on PC, logo on phones), wheel scrolls the chip bar | Hidden scrollbars leave mouse users stuck: map vertical wheel to horizontal scroll. |
