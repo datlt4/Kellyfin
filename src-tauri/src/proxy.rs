@@ -64,12 +64,13 @@ async fn handle(p: &Proxy, req: Request) -> Result<Response, String> {
         .strip_prefix('/')
         .and_then(|s| s.strip_prefix(p.secret.as_str()))
         .filter(|r| r.is_empty() || r.starts_with('/') || r.starts_with('?'))
-        .ok_or("forbidden")?;
+        .ok_or("forbidden")?
+        .to_owned();
     let Some(t) = p.target.read().unwrap().clone() else { return Err("no server selected".into()) };
 
     let (parts, body) = req.into_parts();
     let mut rb = p.client.request(parts.method, format!("{}{}", t.url.trim_end_matches('/'), rest));
-    for (k, v) in parts.headers.iter().filter(|(k, _)| !HOP.contains(&k.as_str()) && k != header::ORIGIN && k != header::REFERER) {
+    for (k, v) in parts.headers.iter().filter(|(k, _)| !HOP.contains(&k.as_str()) && *k != header::ORIGIN && *k != header::REFERER) {
         rb = rb.header(k, v);
     }
     for (k, v) in &t.headers {

@@ -13,8 +13,11 @@ mkdir -p "$OUT"
 in_docker() { # platform, command
   local img="kellyfin-desktop-builder:${1#linux/}"
   docker build -q --platform "$1" -t "$img" -f scripts/desktop.Dockerfile scripts >/dev/null
-  docker run --rm --platform "$1" -u "$(id -u):$(id -g)" -e HOME=/tmp -e npm_config_cache=/tmp/.npm \
-    -v "$PWD:/src" -v "kellyfin-cargo-${1#linux/}:/usr/local/cargo/registry" -w /src "$img" bash -c "npm ci --no-audit --no-fund && $2"
+  # node_modules lives in a volume so the host's (other OS/arch binaries) is left alone;
+  # outputs are handed back to the calling user.
+  docker run --rm --platform "$1" -v "$PWD:/src" -w /src \
+    -v "kellyfin-node-${1#linux/}:/src/node_modules" -v "kellyfin-cargo-${1#linux/}:/usr/local/cargo/registry" \
+    "$img" bash -c "npm ci --no-audit --no-fund && $2; rc=\$?; chown -R $(id -u):$(id -g) src-tauri/target src-tauri/gen dist 2>/dev/null; exit \$rc"
 }
 
 collect() { # dir glob...
