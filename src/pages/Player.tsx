@@ -181,7 +181,8 @@ function PlayerView(props: { id: string }) {
     if (!it || !authToken()) return;
     const position = video.ended ? duration() : now();
     if (position < 1) return;
-    api(`/items/${it.id}/progress`, { method: "POST", body: JSON.stringify({ position }), keepalive }).catch(() => {});
+    const how = mode() === "direct" ? "Direct play" : mode() === "remux" ? "Remux" : "Transcode";
+    api(`/items/${it.id}/progress`, { method: "POST", body: JSON.stringify({ position, mode: how }), keepalive }).catch(() => {});
   }
 
   // Initial choices once the item is known.

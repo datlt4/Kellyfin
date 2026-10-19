@@ -92,12 +92,16 @@ impl PathMap {
     }
 }
 
-pub async fn export(db: &SqlitePool, images_dir: &Path, out: &Path) -> anyhow::Result<()> {
-    for k in ["lib", "item"] {
-        tokio::fs::create_dir_all(out.join("images").join(k)).await?;
+/// Builds the manifest; with `out`, custom images are copied next to it, otherwise image refs are left out.
+pub async fn collect(db: &SqlitePool, images_dir: &Path, out: Option<&Path>) -> anyhow::Result<Manifest> {
+    if let Some(out) = out {
+        for k in ["lib", "item"] {
+            tokio::fs::create_dir_all(out.join("images").join(k)).await?;
+        }
     }
     let mut m = Manifest::new(format!("kellyfin {}", env!("CARGO_PKG_VERSION")));
     let copy = |kind: &str, id: i64| -> Option<String> {
+        let out = out?;
         let src = images::export_source(&images::dir(images_dir, kind, id))?;
         let rel = format!("images/{kind}/{id}.{}", if src.ends_with("orig") { "img" } else { "webp" });
         std::fs::copy(&src, out.join(&rel)).ok()?;
@@ -140,11 +144,20 @@ pub async fn export(db: &SqlitePool, images_dir: &Path, out: &Path) -> anyhow::R
             .collect();
         m.users.push(User { name, is_admin, password_hash, user_data });
     }
-    m.write(out).await
+    Ok(m)
 }
 
-pub async fn import(db: &SqlitePool, images_dir: &Path, dir: &Path, map: &PathMap) -> anyhow::Result<()> {
+pub async fn export(db: &SqlitePool, images_dir: &Path, out: &Path) -> anyhow::Result<()> {
+    collect(db, images_dir, Some(out)).await?.write(out).await
+}
+
+pub async fn import_dir(db: &SqlitePool, images_dir: &Path, dir: &Path, map: &PathMap) -> anyhow::Result<()> {
     let m: Manifest = serde_json::from_slice(&tokio::fs::read(dir.join("manifest.json")).await.context("read manifest.json")?)?;
+    import(db, images_dir, &m, Some(dir), map).await
+}
+
+/// Applies a manifest; image refs are resolved against `dir` (none when imported from the web UI).
+pub async fn import(db: &SqlitePool, images_dir: &Path, m: &Manifest, dir: Option<&Path>, map: &PathMap) -> anyhow::Result<()> {
     anyhow::ensure!(m.format == FORMAT, "not a {FORMAT} manifest");
     let now = util::now();
     // (kind, id, source file) rendered after the DB rows exist.
@@ -186,12 +199,12 @@ pub async fn import(db: &SqlitePool, images_dir: &Path, dir: &Path, map: &PathMa
             .bind(it.added_at.unwrap_or(now))
             .fetch_one(&mut *tx)
             .await?;
-            if let Some(img) = &it.image {
+            if let (Some(img), Some(dir)) = (&it.image, dir) {
                 renders.push(("item", id, dir.join(img)));
             }
         }
         tx.commit().await?;
-        if let Some(img) = &lib.image {
+        if let (Some(img), Some(dir)) = (&lib.image, dir) {
             renders.push(("lib", lib_id, dir.join(img)));
         }
     }

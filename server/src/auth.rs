@@ -30,7 +30,7 @@ pub fn hash_password(p: &str) -> anyhow::Result<String> {
     Ok(Argon2::default().hash_password(p.as_bytes(), &salt).map_err(|e| anyhow!("{e}"))?.to_string())
 }
 
-fn verify_password(hash: &str, p: &str) -> bool {
+pub fn verify_password(hash: &str, p: &str) -> bool {
     PasswordHash::new(hash).is_ok_and(|h| Argon2::default().verify_password(p.as_bytes(), &h).is_ok())
 }
 
@@ -144,8 +144,4 @@ pub async fn logout(State(st): State<AppState>, headers: HeaderMap) -> ApiResult
         sqlx::query("DELETE FROM sessions WHERE token = ?").bind(t).execute(&st.db).await?;
     }
     Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn me(user: User) -> Json<User> {
-    Json(user)
 }

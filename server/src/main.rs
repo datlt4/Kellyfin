@@ -1,3 +1,4 @@
+mod admin;
 mod api;
 mod auth;
 mod db;
@@ -5,6 +6,7 @@ mod error;
 mod images;
 mod jellyfin;
 mod manifest;
+mod recommend;
 mod scan;
 mod settings;
 mod stream;
@@ -37,6 +39,7 @@ pub struct AppState {
     pub images: PathBuf,
     pub scanner: Arc<scan::Scanner>,
     pub transcoder: Arc<transcode::Transcoder>,
+    pub sessions: Arc<admin::Sessions>,
 }
 
 /// Value of `--name VALUE`.
@@ -76,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
                 .filter(|w| w[0] == "--map")
                 .map(|w| w[1].split_once('=').map(|(a, b)| (a.to_owned(), b.to_owned())).context("--map FROM=TO"))
                 .collect::<anyhow::Result<_>>()?;
-            manifest::import(&db, &images, dir.as_ref(), &manifest::PathMap(maps)).await?;
+            manifest::import_dir(&db, &images, dir.as_ref(), &manifest::PathMap(maps)).await?;
             if !args.iter().any(|a| a == "--no-scan") {
                 scan::Scanner::default().run(&db, &images, None).await?;
             }
@@ -96,7 +99,7 @@ async fn serve(cfg: Config, db: SqlitePool, images: PathBuf) -> anyhow::Result<(
     let listener = tokio::net::TcpListener::bind(&cfg.addr).await?;
     tracing::info!("listening on {}", cfg.addr);
     let transcoder = transcode::Transcoder::new(cfg.data.join("transcode"));
-    let st = AppState { db, cfg: Arc::new(cfg), images, scanner: Default::default(), transcoder };
+    let st = AppState { db, cfg: Arc::new(cfg), images, scanner: Default::default(), transcoder, sessions: Default::default() };
     axum::serve(listener, api::router(st)).with_graceful_shutdown(shutdown()).await?;
     Ok(())
 }

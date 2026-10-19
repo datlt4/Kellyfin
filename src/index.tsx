@@ -7,6 +7,7 @@ import Library from "./pages/Library";
 import Item from "./pages/Item";
 import Settings from "./pages/Settings";
 import Player from "./pages/Player";
+import Search from "./pages/Search";
 
 render(
   () => (
@@ -14,7 +15,8 @@ render(
       <Route path="/" component={Home} />
       <Route path="/library/:id" component={Library} />
       <Route path="/item/:id" component={Item} />
-      <Route path="/settings" component={Settings} />
+      <Route path="/settings/:tab?" component={Settings} />
+      <Route path="/search" component={Search} />
       <Route path="/play/:id" component={Player} />
     </Router>
   ),

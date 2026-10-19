@@ -1,11 +1,14 @@
 import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, Show } from "solid-js";
-import { api, fmtClock, fmtDuration, fmtRes, img, streamLabel, subLabel, user, type ItemDetail } from "../api";
+import { api, fmtClock, fmtDuration, fmtRes, img, streamLabel, subLabel, upload, user, type ItemDetail, type Related } from "../api";
+import { ItemCard, LibCard } from "../components/Card";
+import Row from "../components/Row";
 import { audioStreams, defaultAudio, defaultSub } from "../playback";
 
 export default function Item() {
   const params = useParams();
-  const [item, { mutate }] = createResource(() => params.id, (id) => api<ItemDetail>(`/items/${id}`));
+  const [item, { mutate, refetch }] = createResource(() => params.id, (id) => api<ItemDetail>(`/items/${id}`));
+  const [related] = createResource(() => params.id, (id) => api<Related>(`/items/${id}/related`));
   const [audio, setAudio] = createSignal<number | null>(null);
   const [sub, setSub] = createSignal("off");
   createEffect(on(item, (it) => {
@@ -21,6 +24,31 @@ export default function Item() {
     return `/play/${item()!.id}?${q}`;
   };
   const resumable = () => !!item() && !item()!.played && item()!.position > 5;
+
+  async function rename() {
+    const t = prompt("Title (empty = use the file name)", item()!.title);
+    if (t === null) return;
+    await api(`/admin/items/${item()!.id}`, { method: "PATCH", body: JSON.stringify({ title: t }) });
+    refetch();
+  }
+
+  function changeImage() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      await upload(`/admin/items/${item()!.id}/image`, f).catch((e) => alert(e.message));
+      refetch();
+    };
+    input.click();
+  }
+
+  async function autoImage() {
+    await api(`/admin/items/${item()!.id}/image`, { method: "DELETE" });
+    refetch();
+  }
 
   async function patch(body: { played?: boolean; favorite?: boolean }) {
     const it = item()!;
@@ -75,8 +103,25 @@ export default function Item() {
               <Show when={it().prev_id}><A href={`/item/${it().prev_id}`}>‹ Previous</A></Show>
               <Show when={it().next_id}><A href={`/item/${it().next_id}`}>Next ›</A></Show>
             </div>
-            <Show when={user()?.is_admin}><p class="path">{it().path}</p></Show>
+            <Show when={user()?.is_admin}>
+              <div class="row-btns admin-tools">
+                <button class="btn small" onClick={rename}>Edit title</button>
+                <button class="btn small" onClick={changeImage}>Change image</button>
+                <button class="btn small" onClick={autoImage} title="Grab a frame from the video">Auto image</button>
+              </div>
+              <p class="path">{it().path}</p>
+            </Show>
           </div>
+          <Show when={related()?.libraries.length}>
+            <Row title="More like this">
+              <For each={related()!.libraries}>{(l) => <LibCard lib={l} />}</For>
+            </Row>
+          </Show>
+          <Show when={related()?.items.length}>
+            <Row title="Similar videos">
+              <For each={related()!.items}>{(c) => <ItemCard item={c} />}</For>
+            </Row>
+          </Show>
         </div>
       )}
     </Show>

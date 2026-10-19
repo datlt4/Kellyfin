@@ -257,11 +257,15 @@ fn vtt(body: Vec<u8>) -> Response {
 #[derive(Deserialize)]
 pub struct Progress {
     position: f64,
+    /// Playback method, shown on the dashboard.
+    mode: Option<String>,
 }
 
 /// Saves the resume point; near the end counts as watched.
 pub async fn progress(State(st): State<AppState>, u: User, Path(id): Path<i64>, Json(p): Json<Progress>) -> ApiResult<StatusCode> {
-    let duration: Option<f64> = sqlx::query_scalar("SELECT duration FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
+    let (title, duration): (String, Option<f64>) =
+        sqlx::query_as("SELECT title, duration FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
+    st.sessions.touch(&u, id, title, duration, p.position, p.mode);
     let finished = duration.is_some_and(|d| d > 0.0 && p.position >= d * 0.92);
     sqlx::query(
         "INSERT INTO user_data (user_id, item_id, position, played, last_played) VALUES (?1, ?2, ?3, ?4, ?5)

@@ -1,12 +1,13 @@
 use crate::{
     auth::{self, Admin, User},
     error::{ApiError, ApiResult},
-    scan, settings, stream, transcode, AppState,
+    admin, recommend, scan, settings, stream, transcode, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderValue, StatusCode},
-    routing::{get, post},
+    extract::DefaultBodyLimit,
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -24,7 +25,11 @@ pub fn router(st: AppState) -> Router {
     let api = Router::new()
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
-        .route("/me", get(auth::me))
+        .route("/me", get(admin::me))
+        .route("/me/password", post(admin::change_password))
+        .route("/me/avatar", put(admin::set_avatar).delete(admin::delete_avatar))
+        .route("/search", get(recommend::search))
+        .route("/items/{id}/related", get(recommend::related))
         .route("/home", get(home))
         .route("/home/latest", get(latest))
         .route("/libraries", get(libraries))
@@ -36,6 +41,21 @@ pub fn router(st: AppState) -> Router {
         .route("/items/{id}/userdata", post(stream::user_data))
         .route("/admin/scan", get(scan_status).post(scan_start))
         .route("/admin/settings", get(settings::list).put(settings::update))
+        .route("/admin/info", get(admin::info))
+        .route("/admin/restart", post(admin::restart))
+        .route("/admin/shutdown", post(admin::shutdown))
+        .route("/admin/export", get(admin::export))
+        .route("/admin/import", post(admin::import))
+        .route("/admin/fs", get(admin::browse))
+        .route("/admin/users", get(admin::users).post(admin::create_user))
+        .route("/admin/users/{id}", patch(admin::update_user).delete(admin::delete_user))
+        .route("/admin/libraries", get(admin::libraries).post(admin::create_library))
+        .route("/admin/libraries/{id}", patch(admin::update_library).delete(admin::delete_library))
+        .route("/admin/libraries/{id}/image", put(admin::set_library_image).delete(admin::delete_library_image))
+        .route("/admin/items/{id}", patch(admin::update_item))
+        .route("/admin/items/{id}/image", put(admin::set_item_image).delete(admin::delete_item_image))
+        // Image uploads and imported manifests exceed the 2 MB default.
+        .layer(DefaultBodyLimit::max(64 << 20))
         .route("/items/{id}/hls/master.m3u8", get(transcode::master))
         .layer(CompressionLayer::new());
     // Video bodies must not go through compression.
@@ -84,7 +104,7 @@ pub struct Card {
     played: bool,
 }
 
-const CARD: &str = "SELECT i.id, i.library_id, i.title, i.duration, i.width, i.height,
+pub const CARD: &str = "SELECT i.id, i.library_id, i.title, i.duration, i.width, i.height,
     CASE WHEN i.image_ver IS NOT NULL THEN '/img/item/' || i.id || '/' END AS img, i.image_ver AS imgv, i.color,
     COALESCE(u.position, 0.0) AS position, COALESCE(u.played, 0) AS played
     FROM items i LEFT JOIN user_data u ON u.item_id = i.id AND u.user_id = ?1";
@@ -101,7 +121,7 @@ pub struct LibCard {
 }
 
 // Libraries without their own image borrow their first item's.
-const LIB_CARD: &str = "SELECT l.id, l.name, l.kind,
+pub const LIB_CARD: &str = "SELECT l.id, l.name, l.kind,
     (SELECT COUNT(*) FROM items WHERE library_id = l.id) AS count,
     CASE WHEN l.image_ver IS NOT NULL THEN '/img/lib/' || l.id || '/'
          ELSE (SELECT '/img/item/' || id || '/' FROM items WHERE library_id = l.id AND image_ver IS NOT NULL ORDER BY sort_title, id LIMIT 1) END AS img,
@@ -260,6 +280,10 @@ async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> Ap
             .bind(d.card.id)
             .fetch_optional(&st.db)
             .await?;
+    }
+    // Last episode: continue with the next season's library.
+    if d.next_id.is_none() {
+        d.next_id = recommend::next_season(&st.db, d.card.library_id).await?;
     }
     if !user.is_admin {
         d.path = crate::util::file_stem(&d.path);

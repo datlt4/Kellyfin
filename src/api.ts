@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js";
 
-export type User = { id: number; name: string; is_admin: boolean };
+export type User = { id: number; name: string; is_admin: boolean; img?: string | null; imgv?: number | null };
 export type Card = {
   id: number;
   library_id: number;
@@ -43,6 +43,22 @@ export type ItemDetail = Card & {
   prev_id: number | null;
   next_id: number | null;
 };
+export type Related = { libraries: Lib[]; items: Card[] };
+export type Session = { user: string; item_id: number; title: string; position: number; duration: number | null; mode: string };
+export type JobInfo = { item_id: number; p: number; audio: number; hw: boolean; position: number; paused: boolean };
+export type Info = {
+  version: string;
+  libraries: number;
+  items: number;
+  users: number;
+  hw_device: string | null;
+  in_docker: boolean;
+  sessions: Session[];
+  transcodes: JobInfo[];
+};
+export type UserRow = { id: number; name: string; is_admin: boolean; has_password: boolean; created_at: number };
+export type LibRow = { id: number; name: string; kind: string; paths: string[]; count: number; has_image: boolean };
+export type FsList = { path: string; parent: string | null; dirs: string[] };
 export type ScanStatus = { running: boolean; phase: string; done: number; total: number; error: string | null; finished_at: number | null };
 
 export const isTauri = "__TAURI_INTERNALS__" in window;
@@ -89,13 +105,29 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await r.json().catch(() => ({}));
     throw new ApiError(r.status, body.error ?? r.statusText);
   }
-  return r.status === 204 || r.status === 202 ? (undefined as T) : r.json();
+  const text = await r.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 function dropSession() {
   token = null;
   save("token", null);
   setUser(null);
+}
+
+/** Uploads a file as the raw request body (images). */
+export async function upload(path: string, file: Blob, method = "PUT") {
+  const r = await fetch(`${server()}/api${path}`, {
+    method,
+    body: file,
+    headers: { "Content-Type": file.type || "application/octet-stream", Authorization: `Bearer ${token}` },
+  });
+  if (!r.ok) throw new ApiError(r.status, (await r.json().catch(() => ({}))).error ?? r.statusText);
+}
+
+/** Re-reads the signed-in user (after a profile change). */
+export async function refreshUser() {
+  setUser(await api<User>("/me"));
 }
 
 export async function login(username: string, password: string) {
@@ -106,6 +138,7 @@ export async function login(username: string, password: string) {
   token = r.token;
   save("token", r.token);
   setUser(r.user);
+  await refreshUser().catch(() => {});
 }
 
 export async function logout() {
