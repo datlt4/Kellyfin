@@ -1,6 +1,6 @@
 # Kellyfin — handoff
 
-State on 2026-10-20, version **1.2.0** (released). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
+State on 2026-10-20, version **1.3.0** on `dev` (1.2.0 is the latest release). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
 `release.yml` (branch `release/v1.0.0`, tag `v1.0.0`, GitHub release with desktop and mobile builds).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
@@ -233,6 +233,14 @@ are shown on the sign-in and add-server screens, in the avatar menu and in Setti
 and forwards everything — API, images, video, HLS — adding the headers, streaming both ways with ranges.
 Reason: `<video>`/`<img>` cannot send custom headers. Tested by a unit test only; **not yet run inside a real app**.
 
+### 4.7a Navigation
+
+The top bar keeps Jellyfin's row of library chips; a mouse wheel over it scrolls it sideways (it had no visible
+scrollbar, so PC users could not reach the later libraries) and a thin scrollbar appears on hover. A sidebar
+(`TopBar.tsx`, `Sidebar`) lists every library by name with its video count and an accent-insensitive filter, so any
+library is one click away without loading thumbnails. PC opens it with the ☰ button; on phones (≤ 640 px) the
+button is hidden and tapping the logo opens it instead (Home is the first entry).
+
 ### 4.7b Mobile keyboards and Android cleartext
 
 - On-screen keyboards overlay the page (iOS; Android edge-to-edge). `src/viewport.ts` measures the covered height
@@ -362,6 +370,7 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `bd4c505` | 0.7.0 | icon controls with menus, dual subtitles, search icon redrawn | Hand-written SVG paths can render wrong: render every icon to a contact sheet to check. |
 | `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
+| (dev) | 1.3.0 | library sidebar (☰ on PC, logo on phones), wheel scrolls the chip bar | Hidden scrollbars leave mouse users stuck: map vertical wheel to horizontal scroll. |
 | `78e547f` | 1.2.0 | iOS/macOS/Linux apps reach plain-http servers via the local proxy; app and server versions shown | The iOS failure was WebKit mixed-content blocking from `tauri://`, not ATS. Released (20 assets, all CI green); the A8 Star updated 1.1.0 → 1.2.0; not yet verified on a real iPhone. |
 | `a922f0b` | 1.1.0 | keyboard no longer covers inputs, Android http servers, multi-server switch on web and apps | v1.0.0's APK had `usesCleartextTraffic=false` (Gradle placeholder): verify the built APK, not the patch script. Released; the 1.1.0 APK has cleartext on and updated the A8 Star in place over 1.0.0. |
 | (docs) | | README rewritten for GitHub visitors, 12 screenshots | Retake shots by driving the live server with Playwright (desktop 1440×900, Galaxy S9+ portrait/landscape); Escape in the player goes back, so do not press it between shots. |

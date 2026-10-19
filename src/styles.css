@@ -80,7 +80,45 @@ select, input {
   flex: 1;
   min-width: 0;
 }
-.chips::-webkit-scrollbar { display: none; }
+.chips::-webkit-scrollbar { height: 0; }
+/* A thin scrollbar shows on hover so mouse users see the bar scrolls. */
+.chips:hover { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.chips:hover::-webkit-scrollbar { height: 4px; }
+.chips:hover::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
+.menu-btn { flex: none; margin-right: -8px; }
+.drawer-shade { position: fixed; inset: 0; z-index: 30; background: rgba(0, 0, 0, 0.5); }
+.drawer {
+  position: fixed;
+  z-index: 31;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(320px, 85vw);
+  display: flex;
+  flex-direction: column;
+  padding: 10px 8px max(10px, env(safe-area-inset-bottom));
+  padding-top: max(10px, env(safe-area-inset-top));
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  box-shadow: 8px 0 32px rgba(0, 0, 0, 0.5);
+}
+.drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 10px; }
+.drawer-head .brand span { display: inline; }
+.drawer-filter { margin: 8px 6px; color: var(--text); }
+.drawer-list { overflow-y: auto; flex: 1; min-height: 0; }
+.drawer-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.drawer-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-item small { color: var(--muted); flex: none; }
+.drawer-item:hover, .drawer-item.active { background: var(--surface-2); }
+.drawer-item.active { color: var(--accent-2); }
 .chip {
   flex: none;
   padding: 5px 12px;
@@ -528,6 +566,7 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
   .row-nav { display: none; }
   .topbar { gap: 10px; }
   .brand span { display: none; }
+  .menu-btn { display: none; }
   .detail-body { margin-top: -60px; }
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings { grid-template-columns: 1fr; }
