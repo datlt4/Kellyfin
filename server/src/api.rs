@@ -1,7 +1,7 @@
 use crate::{
     auth::{self, Admin, User},
     error::{ApiError, ApiResult},
-    admin, recommend, scan, settings, stream, transcode, AppState,
+    admin, recommend, repair, scan, settings, stream, transcode, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -43,6 +43,7 @@ pub fn router(st: AppState) -> Router {
         .route("/admin/scan", get(scan_status).post(scan_start))
         .route("/admin/settings", get(settings::list).put(settings::update))
         .route("/admin/info", get(admin::info))
+        .route("/admin/repair", post(repair::repair))
         .route("/admin/restart", post(admin::restart))
         .route("/admin/shutdown", post(admin::shutdown))
         .route("/admin/export", get(admin::export))

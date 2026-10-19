@@ -174,6 +174,7 @@ function Dashboard() {
           }}
         </For>
       </section>
+      <Repair />
       <section class="panel">
         <h2>Import / export</h2>
         <p class="muted">Libraries, folders, titles and watch progress as JSON. Images are kept on the server (use <code>kellyfin export DIR</code> to include them).</p>
@@ -183,6 +184,62 @@ function Dashboard() {
         </div>
       </section>
     </>
+  );
+}
+
+type Suspect = { id: number; path: string; title: string; library: string };
+type RepairReport = { applied: boolean; wrong: Suspect[]; review: Suspect[] };
+
+/** Titles/images of another film (Jellyfin's online matching of names like "TẬP 5.3"): fix the sure ones, review the rest. */
+function Repair() {
+  const [report, setReport] = createSignal<RepairReport | null>(null);
+  const [busy, setBusy] = createSignal(false);
+  const act = useAction();
+  const run = (apply: boolean) => {
+    setBusy(true);
+    act
+      .run(async () => setReport(await api<RepairReport>(`/admin/repair?apply=${apply}`, { method: "POST" })), apply ? "Fixed" : undefined)
+      .finally(() => setBusy(false));
+  };
+  const useFileName = (s: Suspect) =>
+    act.run(async () => {
+      await api(`/admin/items/${s.id}`, { method: "PATCH", body: JSON.stringify({ title: null }) });
+      await api(`/admin/items/${s.id}/image`, { method: "DELETE" });
+      setReport({ ...report()!, review: report()!.review.filter((x) => x.id !== s.id) });
+    });
+  const Line = (p: { s: Suspect; action?: boolean }) => (
+    <div class="suspect">
+      <div>
+        <A href={`/item/${p.s.id}`}>{p.s.title}</A>
+        <div class="muted small">{p.s.library} · {p.s.path.split("/").pop()}</div>
+      </div>
+      <Show when={p.action}><button class="btn small" onClick={() => useFileName(p.s)}>Use file name</button></Show>
+    </div>
+  );
+  return (
+    <section class="panel">
+      <h2>Wrong titles and thumbnails</h2>
+      <p class="muted">Jellyfin matched some files to unrelated films online (e.g. "TẬP 5.3" became a Dragon Ball movie) and Kellyfin imported those names and posters.</p>
+      <div class="row-btns">
+        <button class="btn" disabled={busy()} onClick={() => run(false)}>{busy() ? "Checking…" : "Check"}</button>
+        <Show when={report() && !report()!.applied && report()!.wrong.length}>
+          <button class="btn primary" disabled={busy()} onClick={() => run(true)}>Fix {report()!.wrong.length} wrong</button>
+        </Show>
+      </div>
+      <act.Note />
+      <Show when={report()}>
+        {(r) => (
+          <>
+            <h3 class="sub-title">{r().applied ? "Fixed" : "Certainly wrong"} ({r().wrong.length})</h3>
+            <p class="muted small">Episode-style file names carrying a film's title; fixing restores the file name and a frame from the video.</p>
+            <div class="suspects"><For each={r().wrong}>{(s) => <Line s={s} />}</For></div>
+            <h3 class="sub-title">Check yourself ({r().review.length})</h3>
+            <p class="muted small">The title shares no word with the file name: usually a correct translation, sometimes another film.</p>
+            <div class="suspects"><For each={r().review}>{(s) => <Line s={s} action />}</For></div>
+          </>
+        )}
+      </Show>
+    </section>
   );
 }
 

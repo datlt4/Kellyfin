@@ -19,7 +19,7 @@ const STOP: &[&str] = &[
     "official", "videos", "video", "hd", "vietsub", "thuyet", "minh",
 ];
 
-fn tokens(s: &str) -> HashSet<String> {
+pub fn tokens(s: &str) -> HashSet<String> {
     util::fold(s)
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() > 1 && !w.chars().all(|c| c.is_ascii_digit()) && !STOP.contains(w))

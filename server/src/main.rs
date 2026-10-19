@@ -7,6 +7,7 @@ mod images;
 mod jellyfin;
 mod manifest;
 mod recommend;
+mod repair;
 mod scan;
 mod settings;
 mod stream;
@@ -23,6 +24,7 @@ const USAGE: &str = "usage:
   kellyfin jellyfin-export --url URL --key API_KEY --out DIR
   kellyfin import DIR [--map FROM=TO]... [--no-scan]
   kellyfin export DIR
+  kellyfin repair [--apply]      list (or fix) titles/images that belong to another film
   kellyfin passwd USER PASSWORD
 env: KELLYFIN_DATA (./data), KELLYFIN_ADDR (0.0.0.0:8080), KELLYFIN_WEB, KELLYFIN_ADMIN_USER, KELLYFIN_ADMIN_PASSWORD";
 
@@ -86,6 +88,11 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         "export" => manifest::export(&db, &images, args.get(1).context(USAGE)?.as_ref()).await,
+        "repair" => {
+            let r = repair::run(&db, &images, args.iter().any(|a| a == "--apply")).await?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
         "passwd" => {
             let (Some(user), Some(pw)) = (args.get(1), args.get(2)) else { bail!("{USAGE}") };
             auth::set_password(&db, user, pw).await
