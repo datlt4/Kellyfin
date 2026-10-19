@@ -4,3 +4,5 @@ src-tauri/target/
 src-tauri/gen/
 server/target/
 server/data/
+dist-mobile/
+build/
