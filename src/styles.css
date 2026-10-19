@@ -15,6 +15,8 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); }
+/* Room for an on-screen keyboard that overlays the page (set by viewport.ts). */
+body { padding-bottom: var(--kb, 0px); }
 body {
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -500,7 +502,7 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* Login */
-.login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.login { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 16px; }
 .login form { width: min(360px, 100%); display: flex; flex-direction: column; gap: 14px; text-align: center; }
 .login label { display: flex; flex-direction: column; gap: 6px; text-align: left; font-size: 13px; color: var(--muted); }
 .login input { color: var(--text); padding: 11px 12px; }

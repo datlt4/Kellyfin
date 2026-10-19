@@ -1,6 +1,6 @@
 import { createSignal, For, Show } from "solid-js";
 import {
-  activeServer, isTauri, login, probeServer, restore, savedServers, saveServers, useServer, type ServerProfile,
+  activeServer, HERE, isTauri, login, probeServer, restore, savedServers, saveServers, useServer, type ServerProfile,
 } from "../api";
 
 /** Add / edit a saved server: URL plus optional headers (e.g. a Pangolin access token). */
@@ -76,7 +76,7 @@ function ServerEditor(props: { server?: ServerProfile; onDone: (s: ServerProfile
 export default function Login() {
   const [servers, setServers] = createSignal(savedServers());
   // Apps with no saved server start in the editor.
-  const [editing, setEditing] = createSignal<ServerProfile | "new" | null>(isTauri && !savedServers().length ? "new" : null);
+  const [editing, setEditing] = createSignal<ServerProfile | "new" | null>(!savedServers().length ? "new" : null);
   const [name, setName] = createSignal("");
   const [pw, setPw] = createSignal("");
   const [err, setErr] = createSignal("");
@@ -121,7 +121,7 @@ export default function Login() {
         <form onSubmit={submit}>
           <img src="/favicon.svg" alt="" width="56" height="56" />
           <h1>Kellyfin</h1>
-          <Show when={isTauri}>
+          <Show when={servers().length}>
             <label>
               Server
               <div class="server-pick">
@@ -129,7 +129,7 @@ export default function Login() {
                   <Show when={!activeServer()}><option value="">Choose a server</option></Show>
                   <For each={servers()}>{(s) => <option value={s.id}>{s.name}{s.headers.length ? " 🔒" : ""}</option>}</For>
                 </select>
-                <Show when={activeServer()}><button type="button" class="btn small" onClick={() => setEditing(activeServer())}>Edit</button></Show>
+                <Show when={activeServer() && activeServer()!.id !== HERE}><button type="button" class="btn small" onClick={() => setEditing(activeServer())}>Edit</button></Show>
                 <button type="button" class="btn small" onClick={() => setEditing("new")}>+ Add</button>
               </div>
             </label>

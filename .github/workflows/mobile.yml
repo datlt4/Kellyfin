@@ -72,6 +72,8 @@ jobs:
           BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
           $BT/zipalign -f 4 "$APK" aligned.apk
           $BT/apksigner sign --ks ks.jks --ks-pass pass:$PASS --out "kellyfin_android_${TARGET_TAG#v}.apk" aligned.apk
+          # Plain-http servers (LAN, WireGuard) must stay reachable: v1.0.0 shipped with cleartext off.
+          $BT/aapt dump xmltree "kellyfin_android_${TARGET_TAG#v}.apk" AndroidManifest.xml | grep usesCleartextTraffic | tee /dev/stderr | grep -q '0xffffffff'
       - name: Upload APK
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

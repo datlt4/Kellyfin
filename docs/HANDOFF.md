@@ -1,6 +1,6 @@
 # Kellyfin — handoff
 
-State on 2026-10-20, version **1.0.0** — first release: `dev` was fast-forwarded into `main`, which runs
+State on 2026-10-20, version **1.1.0** (released). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
 `release.yml` (branch `release/v1.0.0`, tag `v1.0.0`, GitHub release with desktop and mobile builds).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
@@ -217,10 +217,24 @@ suggested. Search requires every query word in `sort_title`, with digits padded 
 
 ### 4.7 Apps, server profiles and the header proxy
 
-Native apps store several servers `{name, url, headers}` and a session per server. If a server has headers
+The apps **and the web build** store several servers `{name, url, headers}` and a session per server; the
+avatar menu lists them for a one-tap switch (straight in when that server still has a session). In a browser the
+page's own server is the fixed first entry (`HERE`, session key `token`), others need CORS (the API allows any
+origin); servers that need headers are refused on the web, since only the app's proxy can add them. If a server has headers
 (e.g. a Pangolin access token), `src-tauri/src/proxy.rs` serves `http://127.0.0.1:<port>/<random secret>/…`
 and forwards everything — API, images, video, HLS — adding the headers, streaming both ways with ranges.
 Reason: `<video>`/`<img>` cannot send custom headers. Tested by a unit test only; **not yet run inside a real app**.
+
+### 4.7b Mobile keyboards and Android cleartext
+
+- On-screen keyboards overlay the page (iOS; Android edge-to-edge). `src/viewport.ts` measures the covered height
+  from `visualViewport` into `--kb` (bottom padding on `body`) and scrolls the focused field to the centre; the
+  viewport meta has `interactive-widget=resizes-content` for Chrome; the login page uses `100dvh`.
+- Android app: `src-tauri/android/MainActivity.kt` (copied by `apply.sh`) pads the WebView by the IME and system-bar
+  insets, because edge-to-edge ignores `adjustResize`.
+- **Plain http in the Android app**: Tauri's template sets `usesCleartextTraffic` with a Gradle placeholder that is
+  `"false"` for release builds, so v1.0.0 could not reach `http://24.8.0.2:8024` (Chrome could). `apply.sh` now flips
+  the placeholder and fails if it is still false; `mobile.yml` checks the signed APK's manifest with `aapt`.
 
 ### 4.8 Cast
 
@@ -337,6 +351,7 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `bd4c505` | 0.7.0 | icon controls with menus, dual subtitles, search icon redrawn | Hand-written SVG paths can render wrong: render every icon to a contact sheet to check. |
 | `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
+| (release) | 1.1.0 | keyboard no longer covers inputs, Android http servers, multi-server switch on web and apps | v1.0.0's APK had `usesCleartextTraffic=false` (Gradle placeholder): verify the built APK, not the patch script. |
 | `15f74c2` | 1.0.0 | first release: `dev` → `main` | First `release.yml` run: every job green; 20 assets (deb/rpm/AppImage x64+arm64, dmg/app x64+arm64, NSIS/MSI/portable x64+x86+arm64, APK, unsigned IPA). The PAT cannot list Actions secrets, so the APK keystore secrets were not verified. |
 
 ## 8. P7 — AI upscale (planned, nothing built)

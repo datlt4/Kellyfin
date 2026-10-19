@@ -80,15 +80,19 @@ function save(key: string, v: string | null) {
 /** A saved server in the native apps: plain http(s), or behind a proxy that wants extra headers (Pangolin). */
 export type ServerProfile = { id: string; name: string; url: string; headers: [string, string][] };
 
+/** In a browser, the server that served the page is always the first entry. */
+export const HERE = "here";
+const hereProfile = (): ServerProfile => ({ id: HERE, name: `This server (${location.host})`, url: location.origin, headers: [] });
+
 export function savedServers(): ServerProfile[] {
+  let list: ServerProfile[] = [];
   try {
-    return JSON.parse(load("servers") ?? "[]");
-  } catch {
-    return [];
-  }
+    list = JSON.parse(load("servers") ?? "[]");
+  } catch {}
+  return isTauri ? list : [hereProfile(), ...list.filter((s) => s.id !== HERE)];
 }
 export function saveServers(list: ServerProfile[]) {
-  save("servers", JSON.stringify(list));
+  save("servers", JSON.stringify(list.filter((s) => s.id !== HERE)));
 }
 
 // Web build is served by the server itself; native apps pick a saved server.
@@ -96,8 +100,8 @@ const [server, setServerSignal] = createSignal(isTauri ? "" : location.origin);
 const [activeServer, setActiveServer] = createSignal<ServerProfile | null>(null);
 export { server, activeServer };
 
-// Sessions are per server in the apps.
-const tokenKey = () => (isTauri ? `token:${activeServer()?.id ?? ""}` : "token");
+// One session per server ("token" for the page's own server, as before profiles existed).
+const tokenKey = () => (!isTauri && (activeServer()?.id ?? HERE) === HERE ? "token" : `token:${activeServer()?.id ?? ""}`);
 let token = isTauri ? null : load("token");
 export const authToken = () => token;
 
@@ -106,6 +110,7 @@ async function baseFor(p: ServerProfile): Promise<string> {
   const url = p.url.trim().replace(/\/+$/, "");
   const headers = p.headers.filter(([k]) => k.trim());
   if (!headers.length) return url;
+  if (!isTauri) throw new Error("Servers that need headers only work in the Kellyfin app (browsers cannot add headers to video and images)");
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("set_server", { url, headers });
 }
@@ -185,6 +190,13 @@ export function switchServer() {
   setUser(null);
 }
 
+/** Moves to another saved server: straight in when it still has a session, else to its sign-in. */
+export async function switchTo(p: ServerProfile) {
+  setUser(null);
+  await useServer(p);
+  await restore();
+}
+
 export async function logout() {
   await api("/auth/logout", { method: "POST" }).catch(() => {});
   dropSession();
@@ -192,12 +204,10 @@ export async function logout() {
 
 /** Resolves the stored session; false when a login is needed. */
 export async function restore(): Promise<boolean> {
-  if (isTauri) {
-    const list = savedServers();
-    const p = list.find((s) => s.id === load("activeServer")) ?? list[0];
-    if (!p) return false;
-    await useServer(p).catch(() => {});
-  }
+  const list = savedServers();
+  const p = list.find((s) => s.id === load("activeServer")) ?? list[0];
+  if (!p) return false;
+  await useServer(p).catch(() => {});
   if (!token || !server()) return false;
   try {
     setUser(await api<User>("/me"));

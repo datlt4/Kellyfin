@@ -1,6 +1,6 @@
 import { A, useNavigate } from "@solidjs/router";
 import { createResource, createSignal, For, Show } from "solid-js";
-import { api, img, isTauri, logout, switchServer, user, type Lib } from "../api";
+import { activeServer, api, img, logout, savedServers, switchServer, switchTo, user, type Lib } from "../api";
 import Icon from "./Icon";
 
 export default function TopBar() {
@@ -31,7 +31,15 @@ export default function TopBar() {
               <A href="/settings/dashboard">Dashboard</A>
               <A href="/settings/libraries">Libraries</A>
             </Show>
-            <Show when={isTauri}><button onClick={() => { switchServer(); nav("/"); }}>Switch server</button></Show>
+            <div class="menu-head">Server</div>
+            <For each={savedServers()}>
+              {(s) => (
+                <button classList={{ current: s.id === activeServer()?.id }} onClick={async () => { await switchTo(s); nav("/"); }}>
+                  {s.id === activeServer()?.id ? "✓ " : ""}{s.name}{s.headers.length ? " 🔒" : ""}
+                </button>
+              )}
+            </For>
+            <button onClick={() => { switchServer(); nav("/"); }}>Add / edit servers…</button>
             <button onClick={async () => { await logout(); nav("/"); }}>Sign out</button>
           </div>
         </Show>
