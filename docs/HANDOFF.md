@@ -279,27 +279,29 @@ scripts/publish-release.sh        # release/vX.Y.Z branch, tag, release, uploads
 
 ### IPA re-sign (mabu, `~/Downloads/Miscellaneous/ipa-resign-dashboard`, see its `docs/JOB-SPEC.md`)
 
-Prepared but **not activated**:
-- `~/kellyfin-ios/kellyfin-ios-resign.sh` (from Kermius' script): downloads the newest release IPA, keeps a
-  7-day free-account profile for `com.datlt4.kellyfin` via the helper project `~/kellyfin-ios/helper`
-  (Kermius' helper with the bundle id changed), re-signs, installs, prints the dashboard markers.
-- `~/kellyfin-ios/com.datlt4.kellyfin-resign.plist` (every 6 h) — copy to `~/Library/LaunchAgents` and
-  `launchctl load` **after** the first release with an IPA exists.
+Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 
-To do after the first release: `~/ipa-resign/jobs/kellyfin.json` (script mode, `managed: false`,
-`forceArg --force`, `renewArg --renew`, artifact `github-release datlt4/Kellyfin \.ipa$`,
-`install.package com.datlt4.kellyfin`) and `~/ipa-resign/jobs/kellyfin-android.json` (artifact mode,
-`\.apk$`, `install.package com.koi.kellyfin`, `managed: true`, `intervalMinutes 720`, `autoUpdateOnConnect` —
-the A8 Star is the Samsung G885F). A free Apple ID allows only 3 sideloaded apps per device; Kermius is already one.
+- `~/ipa-resign/jobs/kellyfin-android.json` — artifact mode, GitHub release `\.apk$`, `install.package
+  com.koi.kellyfin`, `managed: true` (every 12 h), `autoUpdateOnConnect`. First run: **`install ok 1.0.0`** on the
+  A8 Star (Samsung SM-G885F, USB serial `486c6a0a`). The release APK is signed with the release keystore
+  (cert SHA-256 `DD:81:C1:…:DF:AD`), so later versions update in place.
+- `~/ipa-resign/jobs/kellyfin.json` — script mode, `managed: false`, `launchdLabel com.datlt4.kellyfin-resign`,
+  `forceArg --force`, `renewArg --renew`, artifact `\.ipa$`, `install.package com.datlt4.kellyfin`.
+  Script `~/kellyfin-ios/kellyfin-ios-resign.sh` (from Kermius'): downloads the newest release IPA, keeps a 7-day
+  free-account profile via the helper project `~/kellyfin-ios/helper` (Kermius' helper with the bundle id
+  changed), re-signs, installs, prints the dashboard markers. Agent `~/Library/LaunchAgents/com.datlt4.kellyfin-resign.plist`
+  (RunAtLoad, every 6 h) is loaded. First runs: **`no iPhone reachable`** — the iPhone 11 Pro Max is paired over
+  Wi-Fi and was `unavailable`; it needs to be unlocked near the Mac (or on USB), then "Resign ngay" in the dashboard.
+- A free Apple ID allows 3 sideloaded apps per device; Kermius already uses one.
 
 ---
 
 ## 6. Open items
 
 1. **Run the repair on the server** (Dashboard → Check → Fix): 6 wrong Jumong items; review the 39 others.
-2. **Finish P5**: v1.0.0 is out; confirm repo secrets `ANDROID_KEYSTORE_B64/PASS`
-   (keystore in `~/.config/kellyfin/`) — without them the APK is signed with a throwaway key; then activate the two
-   re-sign jobs on mabu and install on the iPhone and the A8 Star.
+2. **Finish P5**: v1.0.0 is out and installed on the A8 Star; the iOS job needs one successful run with the
+   iPhone reachable (unlock it near mabu or plug USB, then "Resign ngay"); first iOS install also tests the
+   free-account 3-app limit.
 3. **Linux arm64 desktop** is covered by CI (`ubuntu-22.04-arm`); locally it would need QEMU binfmt.
 4. **Verify on real devices**: hev1/remux rules on iOS, header proxy in the apps, Android WebView fullscreen
    and PiP (may need a native plugin), Chromecast/AirPlay.
