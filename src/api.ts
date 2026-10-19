@@ -106,10 +106,19 @@ let token = isTauri ? null : load("token");
 export const authToken = () => token;
 
 /** Base URL the UI talks to: the server itself, or the app's local proxy when headers must be added. */
+export const appVersion = __APP_VERSION__;
+const [serverVersion, setServerVersion] = createSignal<string | null>(null);
+export { serverVersion };
+
+// Apps served from tauri:// (iOS, macOS, Linux) are a secure origin to WebKit, which blocks plain-http servers
+// as mixed content: those go through the app's local proxy (127.0.0.1 is allowed). http://tauri.localhost apps
+// (Android, Windows) reach them directly.
+const secureApp = isTauri && location.protocol !== "http:";
+
 async function baseFor(p: ServerProfile): Promise<string> {
   const url = p.url.trim().replace(/\/+$/, "");
   const headers = p.headers.filter(([k]) => k.trim());
-  if (!headers.length) return url;
+  if (!headers.length && !(secureApp && url.startsWith("http://"))) return url;
   if (!isTauri) throw new Error("Servers that need headers only work in the Kellyfin app (browsers cannot add headers to video and images)");
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("set_server", { url, headers });
@@ -117,6 +126,11 @@ async function baseFor(p: ServerProfile): Promise<string> {
 
 export async function useServer(p: ServerProfile) {
   setServerSignal(await baseFor(p));
+  setServerVersion(null);
+  fetch(`${server()}/api/health`)
+    .then((r) => r.json())
+    .then((h) => server() && setServerVersion(h.version ?? null))
+    .catch(() => {});
   setActiveServer(p);
   save("activeServer", p.id);
   token = load(tokenKey());

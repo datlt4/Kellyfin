@@ -1,6 +1,7 @@
 import { createSignal, For, Show } from "solid-js";
+import { serverVersion } from "../api";
 import {
-  activeServer, HERE, isTauri, login, probeServer, restore, savedServers, saveServers, useServer, type ServerProfile,
+  activeServer, appVersion, HERE, isTauri, login, probeServer, restore, savedServers, saveServers, useServer, type ServerProfile,
 } from "../api";
 
 /** Add / edit a saved server: URL plus optional headers (e.g. a Pangolin access token). */
@@ -69,6 +70,7 @@ function ServerEditor(props: { server?: ServerProfile; onDone: (s: ServerProfile
         <Show when={savedServers().length}><button type="button" class="btn" onClick={() => props.onDone(props.server ?? null)}>Cancel</button></Show>
         <Show when={props.server}><button type="button" class="btn danger" onClick={remove}>Remove</button></Show>
       </div>
+      <p class="version">Kellyfin app {appVersion}</p>
     </form>
   );
 }
@@ -138,6 +140,7 @@ export default function Login() {
           <label>Password<input type="password" value={pw()} onInput={(e) => setPw(e.currentTarget.value)} autocomplete="current-password" /></label>
           <Show when={err()}><p class="error">{err()}</p></Show>
           <button class="primary" disabled={busy() || (isTauri && !activeServer())}>Sign in</button>
+          <p class="version">Kellyfin app {appVersion}{serverVersion() ? ` · server ${serverVersion()}` : ""}</p>
         </form>
       </Show>
     </div>

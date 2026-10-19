@@ -1,7 +1,7 @@
 import { A, useParams } from "@solidjs/router";
 import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import {
-  api, ApiError, fmtClock, img, refreshUser, upload, user,
+  activeServer, api, ApiError, appVersion, fmtClock, img, refreshUser, serverVersion, upload, user,
   type Info, type Lib, type LibRow, type ScanStatus, type UserRow,
 } from "../api";
 import FolderPicker from "../components/FolderPicker";
@@ -74,6 +74,14 @@ function Profile() {
           </div>
           <avAct.Note />
         </div>
+      </section>
+      <section class="panel">
+        <h2>About</h2>
+        <dl class="about">
+          <dt>App</dt><dd>Kellyfin {appVersion}</dd>
+          <dt>Server</dt><dd>{serverVersion() ? `Kellyfin ${serverVersion()}` : "…"}</dd>
+          <dt>Address</dt><dd>{activeServer()?.url ?? location.origin}</dd>
+        </dl>
       </section>
       <form class="panel form" onSubmit={savePw}>
         <h2>Password</h2>

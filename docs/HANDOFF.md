@@ -1,6 +1,6 @@
 # Kellyfin — handoff
 
-State on 2026-10-20, version **1.1.0** (released). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
+State on 2026-10-20, version **1.2.0** (released). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
 `release.yml` (branch `release/v1.0.0`, tag `v1.0.0`, GitHub release with desktop and mobile builds).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
@@ -221,7 +221,14 @@ suggested. Search requires every query word in `sort_title`, with digits padded 
 The apps **and the web build** store several servers `{name, url, headers}` and a session per server; the
 avatar menu lists them for a one-tap switch (straight in when that server still has a session). In a browser the
 page's own server is the fixed first entry (`HERE`, session key `token`), others need CORS (the API allows any
-origin); servers that need headers are refused on the web, since only the app's proxy can add them. If a server has headers
+origin); servers that need headers are refused on the web, since only the app's proxy can add them.
+
+**Plain http in Apple/Linux apps**: those apps load the UI from `tauri://localhost`, which WebKit treats as a secure
+origin, so `http://` servers are blocked as mixed content (ATS keys in Info.plist do not help). Any `http://` server
+is therefore routed through the same local proxy as header servers when `location.protocol !== "http:"`;
+`127.0.0.1` is allowed, and the Rust proxy is not subject to ATS. Android/Windows apps (`http://tauri.localhost`)
+connect directly. Versions: `__APP_VERSION__` (Vite define from package.json) and the server's `/api/health`
+are shown on the sign-in and add-server screens, in the avatar menu and in Settings → Profile → About. If a server has headers
 (e.g. a Pangolin access token), `src-tauri/src/proxy.rs` serves `http://127.0.0.1:<port>/<random secret>/…`
 and forwards everything — API, images, video, HLS — adding the headers, streaming both ways with ranges.
 Reason: `<video>`/`<img>` cannot send custom headers. Tested by a unit test only; **not yet run inside a real app**.
@@ -355,6 +362,7 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `bd4c505` | 0.7.0 | icon controls with menus, dual subtitles, search icon redrawn | Hand-written SVG paths can render wrong: render every icon to a contact sheet to check. |
 | `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
+| (release) | 1.2.0 | iOS/macOS/Linux apps reach plain-http servers via the local proxy; app and server versions shown | The iOS failure was WebKit mixed-content blocking from `tauri://`, not ATS. Not yet verified on a real iPhone. |
 | `a922f0b` | 1.1.0 | keyboard no longer covers inputs, Android http servers, multi-server switch on web and apps | v1.0.0's APK had `usesCleartextTraffic=false` (Gradle placeholder): verify the built APK, not the patch script. Released; the 1.1.0 APK has cleartext on and updated the A8 Star in place over 1.0.0. |
 | (docs) | | README rewritten for GitHub visitors, 12 screenshots | Retake shots by driving the live server with Playwright (desktop 1440×900, Galaxy S9+ portrait/landscape); Escape in the player goes back, so do not press it between shots. |
 | `15f74c2` | 1.0.0 | first release: `dev` → `main` | First `release.yml` run: every job green; 20 assets (deb/rpm/AppImage x64+arm64, dmg/app x64+arm64, NSIS/MSI/portable x64+x86+arm64, APK, unsigned IPA). The PAT cannot list Actions secrets, so the APK keystore secrets were not verified. |
