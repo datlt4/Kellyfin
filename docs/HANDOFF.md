@@ -101,6 +101,7 @@ scripts/
   desktop.Dockerfile    Ubuntu 22.04 build image (glibc 2.35) with cargo-xwin + NSIS
   publish-release.sh    branch release/vX.Y.Z + tag + GitHub release + upload dist-*/
 .github/workflows/      build.yml, release.yml, mobile.yml (see §5)
+docs/screenshots/       README screenshots (JPEG), taken with Playwright + Chrome from the live server
 ```
 
 ---
@@ -323,8 +324,11 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
    `src-tauri/target` and the `rust:1-bookworm` image come back whenever tests run locally — delete them after.
    Docker's build cache (~75 GB, mostly other projects) was left alone.
 6. Android/iOS apps have no in-app updater (Kermius uses the Tauri updater with signing keys; not set up here).
-7. The owner may want to retire Jellyfin once satisfied; Kellyfin never writes to media folders.
-8. P7 (§8).
+7. User `koi` (imported from Jellyfin, id 1) disappeared from the server between 2026-10-19 and 10-20; the
+   server has no request log, so when/how is unknown. It can be recreated from the Jellyfin export (9 progress
+   entries; password must be set again) — waiting for the owner.
+8. The owner may want to retire Jellyfin once satisfied; Kellyfin never writes to media folders.
+9. P7 (§8).
 
 ## 7. Commit history (what each step did and what it taught)
 
@@ -352,6 +356,7 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
 | `a922f0b` | 1.1.0 | keyboard no longer covers inputs, Android http servers, multi-server switch on web and apps | v1.0.0's APK had `usesCleartextTraffic=false` (Gradle placeholder): verify the built APK, not the patch script. Released; the 1.1.0 APK has cleartext on and updated the A8 Star in place over 1.0.0. |
+| (docs) | | README rewritten for GitHub visitors, 12 screenshots | Retake shots by driving the live server with Playwright (desktop 1440×900, Galaxy S9+ portrait/landscape); Escape in the player goes back, so do not press it between shots. |
 | `15f74c2` | 1.0.0 | first release: `dev` → `main` | First `release.yml` run: every job green; 20 assets (deb/rpm/AppImage x64+arm64, dmg/app x64+arm64, NSIS/MSI/portable x64+x86+arm64, APK, unsigned IPA). The PAT cannot list Actions secrets, so the APK keystore secrets were not verified. |
 
 ## 8. P7 — AI upscale (planned, nothing built)
