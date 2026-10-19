@@ -1,6 +1,7 @@
 import { useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import Icon from "../components/Icon";
+import { airplay, castAvailable, castDevice, castLoad, castSeek, castToggle, initCast, remotePaused, remoteTime, requestCast, stopCast } from "../cast";
 import { api, authToken, fmtClock, img, mediaUrl, server, streamLabel, subLabel, type ItemDetail } from "../api";
 import {
   audioStreams, autoQuality, bandwidth, canCopyAudio, screenP, cueAt, defaultAudio, defaultSub, mseHls, nativeHls, originalMode, parseVtt,
@@ -167,6 +168,7 @@ function PlayerView(props: { id: string }) {
   function seek(t: number) {
     t = Math.max(0, Math.min(t, Math.max(0, duration() - 1)));
     setTime(t);
+    if (casting()) return castSeek(t);
     if (mode() !== "remux") {
       video.currentTime = t;
       return;
@@ -245,7 +247,36 @@ function PlayerView(props: { id: string }) {
     hideTimer = window.setTimeout(() => playing() && setUi(false), HIDE_MS);
   }
 
-  const toggle = () => (video.paused ? video.play().catch(() => {}) : video.pause());
+  // While casting, the controls drive the TV instead of the local <video>.
+  const casting = () => castDevice() !== null;
+  const isPlaying = () => (casting() ? !remotePaused() : playing());
+  const toggle = () => (casting() ? castToggle() : video.paused ? video.play().catch(() => {}) : video.pause());
+
+  /** What the TV should fetch: the original MP4 when every Chromecast decodes it, else an H.264 transcode. */
+  function castMedia() {
+    const it = item()!;
+    const original = it.video_codec === "h264" && ["mp4", "m4v"].includes(it.ext) && audio() === (audioStreams(it)[0]?.index ?? null);
+    return {
+      url: original ? mediaUrl(`/items/${it.id}/file`) : mediaUrl(`/items/${it.id}/hls/master.m3u8`, { audio: audio() ?? -1 }),
+      contentType: original ? "video/mp4" : "application/x-mpegurl",
+      title: it.title,
+      subtitle: it.library_name,
+      image: img(it, "l"),
+      vtt: sub() !== "off" ? mediaUrl(`/items/${it.id}/subtitles/${sub()}.vtt`) : undefined,
+      start: now(),
+    };
+  }
+  createEffect(on(castDevice, (dev, prev) => {
+    if (dev && item()) {
+      video.pause();
+      castLoad(castMedia()).catch((e) => setError(`Cast failed: ${e?.description ?? e}`));
+    } else if (prev && !dev) {
+      // Back from the TV: carry on here where it stopped.
+      seek(remoteTime());
+      video.play().catch(() => {});
+    }
+  }, { defer: true }));
+  const [airplayPick, setAirplayPick] = createSignal<(() => void) | null>(null);
 
   async function fullscreen() {
     if (document.fullscreenElement) return document.exitFullscreen();
@@ -338,6 +369,8 @@ function PlayerView(props: { id: string }) {
 
   onMount(() => {
     // Subtitles sit just above the controls, whose height depends on how many rows they wrap to.
+    initCast();
+    setAirplayPick(() => airplay(video));
     const ro = new ResizeObserver(() => root.style.setProperty("--controls-h", `${controls.offsetHeight}px`));
     ro.observe(controls);
     onCleanup(() => ro.disconnect());
@@ -346,7 +379,7 @@ function PlayerView(props: { id: string }) {
     document.addEventListener("visibilitychange", onHide);
     let raf = 0;
     const tick = () => {
-      const t = now();
+      const t = casting() ? remoteTime() : now();
       if (scrub() === null) setTime(t);
       const text = cueAt(cues(), t);
       if (text !== cue()) setCue(text);
@@ -398,6 +431,7 @@ function PlayerView(props: { id: string }) {
     <div class="player" classList={{ "ui-hidden": !ui() }} ref={root} onPointerMove={(e) => e.pointerType === "mouse" && poke()}>
       <video
         ref={video}
+        x-webkit-airplay="allow"
         playsinline
         preload="auto"
         poster={item() ? img(item()!, "l") : undefined}
@@ -446,6 +480,14 @@ function PlayerView(props: { id: string }) {
 
       <Show when={waiting() && !error()}><div class="spinner" /></Show>
       <Show when={error()}><div class="player-msg">{error()}</div></Show>
+      <Show when={castDevice()}>
+        {(d) => (
+          <div class="cast-banner">
+            <Icon name="cast" size={40} />
+            <span>Playing on <b>{d()}</b></span>
+          </div>
+        )}
+      </Show>
       <Show when={upNext() !== null}>
         <button class="up-next" onClick={() => nav(`/play/${item()!.next_id}`, { replace: true })}>
           Next episode in {upNext()}s ›
@@ -476,7 +518,7 @@ function PlayerView(props: { id: string }) {
           />
         </div>
         <div class="p-row">
-          <button class="icon" onClick={toggle} aria-label={playing() ? "Pause" : "Play"}><Icon name={playing() ? "pause" : "play"} size={26} /></button>
+          <button class="icon" onClick={toggle} aria-label={isPlaying() ? "Pause" : "Play"}><Icon name={isPlaying() ? "pause" : "play"} size={26} /></button>
           <button class="icon" onClick={() => seek(now() - 10)} aria-label="Back 10 seconds"><Icon name="back10" /></button>
           <button class="icon" onClick={() => seek(now() + 10)} aria-label="Forward 10 seconds"><Icon name="fwd10" /></button>
           <span class="clock">{fmtClock(shown())} / {fmtClock(duration())}</span>
@@ -504,6 +546,12 @@ function PlayerView(props: { id: string }) {
           <Show when={item()?.next_id}>
             <button class="icon" onClick={() => nav(`/play/${item()!.next_id}`, { replace: true })} aria-label="Next episode"><Icon name="next" /></button>
           </Show>
+          <Show when={castAvailable()}>
+            <button class="icon" classList={{ on: casting() }} onClick={() => (casting() ? stopCast() : requestCast())} aria-label="Cast">
+              <Icon name="cast" />
+            </button>
+          </Show>
+          <Show when={airplayPick()}>{(pick) => <button class="icon" onClick={() => pick()()} aria-label="AirPlay"><Icon name="airplay" /></button>}</Show>
           <Show when={pipOk}><button class="icon" onClick={pip} aria-label="Picture in picture"><Icon name="pip" /></button></Show>
           <button class="icon" onClick={fullscreen} aria-label="Fullscreen"><Icon name="fullscreen" /></button>
         </div>
