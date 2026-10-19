@@ -137,6 +137,13 @@ export function defaultSub(it: ItemDetail): string {
 
 export const subLang = (s: SubTrack | undefined) => s?.lang ?? "off";
 
+/** Second subtitle shown above the first (language learning): the last one picked, never the same track. */
+export function defaultSub2(it: ItemDetail, primary: string): string {
+  const want = pref("sub2Lang");
+  if (!want || want === "off") return "off";
+  return it.subtitles.find((s) => s.supported && s.key !== primary && sameLang(s.lang, want))?.key ?? "off";
+}
+
 export type Cue = { start: number; end: number; text: string };
 
 function ts(s: string) {

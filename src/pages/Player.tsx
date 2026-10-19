@@ -4,7 +4,7 @@ import Icon from "../components/Icon";
 import { airplay, castAvailable, castDevice, castLoad, castSeek, castToggle, initCast, remotePaused, remoteTime, requestCast, stopCast } from "../cast";
 import { api, authToken, fmtClock, img, mediaUrl, server, streamLabel, subLabel, type ItemDetail } from "../api";
 import {
-  audioStreams, autoQuality, bandwidth, canCopyAudio, screenP, cueAt, defaultAudio, defaultSub, mseHls, nativeHls, originalMode, parseVtt,
+  audioStreams, autoQuality, bandwidth, canCopyAudio, screenP, cueAt, defaultAudio, defaultSub, defaultSub2, mseHls, nativeHls, originalMode, parseVtt,
   preferredQuality, qualities, remember, subLang, type Cue, type Mode, type Quality,
 } from "../playback";
 
@@ -37,6 +37,13 @@ function PlayerView(props: { id: string }) {
   const [sub, setSub] = createSignal("off");
   const [cues, setCues] = createSignal<Cue[]>([]);
   const [cue, setCue] = createSignal("");
+  const [sub2, setSub2] = createSignal("off");
+  const [cues2, setCues2] = createSignal<Cue[]>([]);
+  const [cue2, setCue2] = createSignal("");
+  const [menu, setMenu] = createSignal<"subs" | "subs2" | "audio" | "quality" | null>(null);
+  const [volume, setVolume] = createSignal(1);
+  const [muted, setMuted] = createSignal(false);
+  const [fav, setFav] = createSignal(false);
   const [ui, setUi] = createSignal(true);
   const [error, setError] = createSignal("");
   const [upNext, setUpNext] = createSignal<number | null>(null);
@@ -195,6 +202,8 @@ function PlayerView(props: { id: string }) {
     const a = sp.audio !== undefined ? Number(sp.audio) : defaultAudio(it);
     setAudio(a);
     setSub(typeof sp.sub === "string" ? sp.sub : defaultSub(it));
+    setSub2(defaultSub2(it, sub()));
+    setFav(it.favorite);
     const q = preferredQuality();
     // A remembered height the file does not have falls back to adaptive.
     setQuality(typeof q === "number" && !qualities(it).includes(q) ? "auto" : q);
@@ -212,17 +221,29 @@ function PlayerView(props: { id: string }) {
   }));
 
   // Subtitles are drawn by us (not <track>) so they stay in sync across remux restarts.
-  createEffect(on(sub, async (key) => {
-    setCues([]);
-    setCue("");
+  async function fetchCues(key: string): Promise<Cue[]> {
     const it = item();
-    if (!it || key === "off") return;
+    if (!it || key === "off") return [];
     try {
       const r = await fetch(`${server()}/api/items/${it.id}/subtitles/${key}.vtt`, {
         headers: { Authorization: `Bearer ${authToken()}` },
       });
-      if (r.ok && sub() === key) setCues(parseVtt(await r.text()));
-    } catch {}
+      return r.ok ? parseVtt(await r.text()) : [];
+    } catch {
+      return [];
+    }
+  }
+  createEffect(on(sub, async (key) => {
+    setCues([]);
+    setCue("");
+    const c = await fetchCues(key);
+    if (sub() === key) setCues(c);
+  }));
+  createEffect(on(sub2, async (key) => {
+    setCues2([]);
+    setCue2("");
+    const c = await fetchCues(key);
+    if (sub2() === key) setCues2(c);
   }));
 
   function changeAudio(index: number) {
@@ -236,7 +257,25 @@ function PlayerView(props: { id: string }) {
 
   function changeSub(key: string) {
     setSub(key);
+    if (key === sub2()) setSub2("off");
     remember("subLang", subLang(item()?.subtitles.find((s) => s.key === key)));
+  }
+
+  function changeSub2(key: string) {
+    setSub2(key);
+    remember("sub2Lang", subLang(item()?.subtitles.find((s) => s.key === key)));
+  }
+
+  async function toggleFav() {
+    const it = item();
+    if (!it) return;
+    setFav(!fav());
+    await api(`/items/${it.id}/userdata`, { method: "POST", body: JSON.stringify({ favorite: fav() }) }).catch(() => setFav(!fav()));
+  }
+
+  function setVol(v: number) {
+    video.volume = v;
+    video.muted = v === 0;
   }
 
   // UI auto-hide while playing.
@@ -244,7 +283,7 @@ function PlayerView(props: { id: string }) {
   function poke() {
     setUi(true);
     clearTimeout(hideTimer);
-    hideTimer = window.setTimeout(() => playing() && setUi(false), HIDE_MS);
+    hideTimer = window.setTimeout(() => playing() && !menu() && setUi(false), HIDE_MS);
   }
 
   // While casting, the controls drive the TV instead of the local <video>.
@@ -383,6 +422,8 @@ function PlayerView(props: { id: string }) {
       if (scrub() === null) setTime(t);
       const text = cueAt(cues(), t);
       if (text !== cue()) setCue(text);
+      const text2 = cueAt(cues2(), t);
+      if (text2 !== cue2()) setCue2(text2);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -441,6 +482,7 @@ function PlayerView(props: { id: string }) {
         onPlaying={() => { setWaiting(false); pendingAt = null; }}
         onCanPlay={() => setWaiting(false)}
         onSeeked={() => report()}
+        onVolumeChange={() => { setVolume(video.volume); setMuted(video.muted); }}
         onLoadedMetadata={() => {
           if (pendingSkip > 0.3) video.currentTime = pendingSkip;
           pendingSkip = 0;
@@ -474,8 +516,79 @@ function PlayerView(props: { id: string }) {
         )}
       </Show>
 
-      <Show when={cue()}>
-        <div class="subs"><span>{cue()}</span></div>
+      <Show when={cue() || cue2()}>
+        <div class="subs">
+          <Show when={cue2()}><span class="sub2">{cue2()}</span></Show>
+          <Show when={cue()}><span>{cue()}</span></Show>
+        </div>
+      </Show>
+
+      <Show when={menu()}>
+        {(m) => {
+          const it = item()!;
+          const pick = (f: (v: string) => void) => (v: string) => { f(v); setMenu(null); };
+          const opts = (): { title: string; current: string; items: { value: string; label: string; off?: boolean }[]; onPick: (v: string) => void } => {
+            const subs = it.subtitles.map((s) => ({ value: s.key, label: subLabel(s), off: !s.supported }));
+            switch (m()) {
+              case "subs":
+                return { title: "Subtitles", current: sub(), items: [{ value: "off", label: "Off" }, ...subs], onPick: pick(changeSub) };
+              case "subs2":
+                return {
+                  title: "Secondary subtitles",
+                  current: sub2(),
+                  items: [{ value: "off", label: "Off" }, ...subs.filter((s) => s.value !== sub())],
+                  onPick: pick(changeSub2),
+                };
+              case "audio":
+                return {
+                  title: "Audio",
+                  current: String(audio()),
+                  items: audioStreams(it).map((s) => ({ value: String(s.index), label: streamLabel(s) })),
+                  onPick: pick((v) => changeAudio(Number(v))),
+                };
+              default:
+                return {
+                  title: "Quality",
+                  current: String(quality()),
+                  items: [
+                    ...(originalMode(it, audio()) ? [{ value: "orig", label: "Original" }] : []),
+                    { value: "auto", label: `Auto${mode() === "hls" && quality() === "auto" && levelP() ? ` (${levelP()}p)` : ""}` },
+                    ...qualities(it).map((p) => ({ value: String(p), label: `${p}p` })),
+                  ],
+                  onPick: pick(changeQuality),
+                };
+            }
+          };
+          return (
+            <>
+              <div class="menu-shade" onPointerUp={(e) => { e.stopPropagation(); setMenu(null); }} />
+              <div class="p-menu" onPointerUp={(e) => e.stopPropagation()}>
+                <div class="p-menu-title">
+                  <Show when={m() === "subs2"}>
+                    <button class="icon small" onClick={() => setMenu("subs")} aria-label="Back"><Icon name="left" size={18} /></button>
+                  </Show>
+                  {opts().title}
+                </div>
+                <Show when={m() === "subs" && it.subtitles.length > 1}>
+                  <button class="p-menu-item" onClick={() => setMenu("subs2")}>
+                    <span class="check" />
+                    <span class="grow">Secondary subtitles</span>
+                    <span class="muted">{sub2() === "off" ? "Off" : subLabel(it.subtitles.find((s) => s.key === sub2())!)}</span>
+                    <Icon name="right" size={18} />
+                  </button>
+                </Show>
+                <For each={opts().items}>
+                  {(o) => (
+                    <button class="p-menu-item" disabled={o.off} onClick={() => opts().onPick(o.value)}>
+                      <span class="check">{o.value === opts().current ? <Icon name="check" size={18} /> : null}</span>
+                      <span class="grow">{o.label}</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </>
+          );
+        }}
       </Show>
 
       <Show when={waiting() && !error()}><div class="spinner" /></Show>
@@ -523,25 +636,21 @@ function PlayerView(props: { id: string }) {
           <button class="icon" onClick={() => seek(now() + 10)} aria-label="Forward 10 seconds"><Icon name="fwd10" /></button>
           <span class="clock">{fmtClock(shown())} / {fmtClock(duration())}</span>
           <span class="grow" />
-          <Show when={item()}>
-            <select value={String(quality())} onChange={(e) => changeQuality(e.currentTarget.value)} aria-label="Quality">
-              <Show when={originalMode(item()!, audio())}><option value="orig">Original</option></Show>
-              <option value="auto">Auto{mode() === "hls" && quality() === "auto" && levelP() ? ` (${levelP()}p)` : ""}</option>
-              <For each={qualities(item()!)}>{(p) => <option value={p}>{p}p</option>}</For>
-            </select>
+          <button class="icon" classList={{ on: fav() }} onClick={toggleFav} aria-label="Favorite"><Icon name="heart" /></button>
+          <Show when={item()?.subtitles.length}>
+            <button class="icon" classList={{ on: sub() !== "off" }} onClick={() => setMenu(menu() === "subs" ? null : "subs")} aria-label="Subtitles"><Icon name="cc" /></button>
           </Show>
           <Show when={item() && audioStreams(item()!).length > 1}>
-            <select value={audio() ?? ""} onChange={(e) => changeAudio(Number(e.currentTarget.value))} aria-label="Audio">
-              <For each={audioStreams(item()!)}>{(s) => <option value={s.index}>{streamLabel(s)}</option>}</For>
-            </select>
+            <button class="icon" onClick={() => setMenu(menu() === "audio" ? null : "audio")} aria-label="Audio track"><Icon name="music" /></button>
           </Show>
-          <Show when={item()?.subtitles.length}>
-            <select value={sub()} onChange={(e) => changeSub(e.currentTarget.value)} aria-label="Subtitles">
-              <option value="off">Subtitles off</option>
-              <For each={item()!.subtitles}>
-                {(s) => <option value={s.key} disabled={!s.supported}>{subLabel(s)}</option>}
-              </For>
-            </select>
+          <div class="vol">
+            <button class="icon" onClick={() => (video.muted = !video.muted)} aria-label={muted() ? "Unmute" : "Mute"}>
+              <Icon name={muted() || volume() === 0 ? "mute" : "volume"} />
+            </button>
+            <input type="range" min="0" max="1" step="0.05" value={muted() ? 0 : volume()} onInput={(e) => setVol(Number(e.currentTarget.value))} aria-label="Volume" />
+          </div>
+          <Show when={item()}>
+            <button class="icon" onClick={() => setMenu(menu() === "quality" ? null : "quality")} aria-label="Quality"><Icon name="gear" /></button>
           </Show>
           <Show when={item()?.next_id}>
             <button class="icon" onClick={() => nav(`/play/${item()!.next_id}`, { replace: true })} aria-label="Next episode"><Icon name="next" /></button>

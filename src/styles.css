@@ -246,6 +246,40 @@ main { padding-bottom: 48px; }
 }
 .player video { width: 100%; height: 100%; object-fit: contain; display: block; touch-action: none; }
 .icon.on { color: var(--accent-2); }
+.icon.small { width: 28px; height: 28px; }
+.vol { display: flex; align-items: center; }
+.vol input { width: 90px; accent-color: var(--accent-2); }
+@media (pointer: coarse) { .vol input { display: none; } }
+.menu-shade { position: absolute; inset: 0; z-index: 4; }
+.p-menu {
+  position: absolute;
+  z-index: 5;
+  right: 12px;
+  bottom: calc(var(--controls-h, 110px) + 4px);
+  width: min(340px, calc(100% - 24px));
+  max-height: 60%;
+  overflow: auto;
+  padding: 6px 0;
+  border-radius: var(--radius);
+  background: rgba(21, 25, 34, 0.97);
+  border: 1px solid var(--line);
+}
+.p-menu-title { display: flex; align-items: center; gap: 6px; padding: 8px 16px; font-size: 17px; font-weight: 600; }
+.p-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 16px;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: 14px;
+}
+.p-menu-item:hover { background: rgba(255, 255, 255, 0.08); }
+.p-menu-item:disabled { opacity: 0.4; }
+.p-menu-item .muted { font-size: 12px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.check { width: 18px; flex: none; color: var(--accent-2); }
 .cast-banner {
   position: absolute;
   inset: 0;
@@ -350,6 +384,8 @@ a.icon { display: grid; place-items: center; width: 40px; height: 40px; border-r
   transition: bottom 0.2s;
 }
 .player:not(.ui-hidden) .subs { bottom: calc(var(--controls-h, 110px) + 8px); }
+.subs { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.subs .sub2 { font-size: clamp(13px, 1.7vw, 22px); color: #ffd166; }
 .subs span {
   white-space: pre-line;
   font-size: clamp(16px, 2.2vw, 28px);
