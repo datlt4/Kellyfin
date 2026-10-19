@@ -138,7 +138,7 @@ main { padding-bottom: 48px; }
 
 /* Shelves */
 .row { margin-top: 28px; content-visibility: auto; contain-intrinsic-size: auto 260px; }
-.row-head { display: flex; align-items: center; justify-content: space-between; padding: 0 var(--gutter); margin-bottom: 10px; }
+.row-head { display: flex; align-items: center; justify-content: space-between; padding: 0 var(--gutter); margin-bottom: 6px; }
 .row-head h2 { font-size: 19px; }
 .row-nav button {
   width: 32px;
@@ -154,7 +154,8 @@ main { padding-bottom: 48px; }
   grid-auto-columns: var(--card-w);
   gap: 14px;
   overflow-x: auto;
-  padding: 0 var(--gutter) 6px;
+  /* Room for the hover outline, which overflow would clip. */
+  padding: 4px var(--gutter) 6px;
   scroll-padding: 0 var(--gutter);
   scroll-snap-type: x mandatory;
   scrollbar-width: none;
