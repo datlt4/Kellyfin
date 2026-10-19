@@ -1,13 +1,14 @@
-import { A, useNavigate } from "@solidjs/router";
-import { createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { A, useLocation, useNavigate } from "@solidjs/router";
+import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { activeServer, api, appVersion, img, logout, savedServers, serverVersion, switchServer, switchTo, user, type Lib } from "../api";
 import Icon from "./Icon";
 
 const fold = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/gi, "d").toLowerCase();
 const narrow = () => window.matchMedia("(max-width: 640px)").matches;
+const GAP = 6; // .chips gap, px
 
-/** Library list as plain text: reach any library without scrolling through thumbnails. */
-function Sidebar(props: { libs: Lib[]; onClose: () => void }) {
+/** Plain list of libraries with a filter (Jellyfin's "More" menu): any library without loading thumbnails. */
+function LibraryMenu(props: { libs: Lib[]; onClose: () => void }) {
   const [filter, setFilter] = createSignal("");
   const shown = () => props.libs.filter((l) => fold(l.name).includes(fold(filter().trim())));
   const onKey = (e: KeyboardEvent) => e.key === "Escape" && props.onClose();
@@ -15,29 +16,21 @@ function Sidebar(props: { libs: Lib[]; onClose: () => void }) {
   onCleanup(() => window.removeEventListener("keydown", onKey));
   return (
     <>
-      <div class="drawer-shade" onClick={props.onClose} />
-      <aside class="drawer" aria-label="Libraries">
-        <div class="drawer-head">
-          <A href="/" class="brand" end onClick={props.onClose}>
-            <img src="/favicon.svg" alt="" width="26" height="26" />
-            <span>Kellyfin</span>
-          </A>
-          <button class="icon" onClick={props.onClose} aria-label="Close"><Icon name="close" /></button>
-        </div>
-        <A href="/" class="drawer-item" end onClick={props.onClose}>Home</A>
-        <A href="/search" class="drawer-item" onClick={props.onClose}>Search</A>
-        <input class="drawer-filter" type="search" placeholder={`Filter ${props.libs.length} libraries`} value={filter()} onInput={(e) => setFilter(e.currentTarget.value)} />
-        <nav class="drawer-list">
+      <div class="more-shade" onClick={props.onClose} />
+      <div class="more-menu">
+        <input class="more-filter" type="search" placeholder={`Filter ${props.libs.length} libraries`} value={filter()} onInput={(e) => setFilter(e.currentTarget.value)} />
+        <nav class="more-list">
           <For each={shown()} fallback={<p class="muted pad">No library matches.</p>}>
             {(l) => (
-              <A href={`/library/${l.id}`} class="drawer-item" onClick={props.onClose}>
+              <A href={`/library/${l.id}`} class="more-item" onClick={props.onClose}>
+                <Icon name="film" size={18} />
                 <span>{l.name}</span>
                 <small>{l.count}</small>
               </A>
             )}
           </For>
         </nav>
-      </aside>
+      </div>
     </>
   );
 }
@@ -45,36 +38,60 @@ function Sidebar(props: { libs: Lib[]; onClose: () => void }) {
 export default function TopBar() {
   const [libs] = createResource(() => api<Lib[]>("/libraries"));
   const [menu, setMenu] = createSignal(false);
-  const [drawer, setDrawer] = createSignal(false);
+  const [more, setMore] = createSignal(false);
+  // How many library chips fit in the bar; the rest go under "More".
+  const [fit, setFit] = createSignal(Infinity);
   const nav = useNavigate();
-  // A mouse wheel only scrolls vertically: turn it into horizontal scrolling of the library chips.
-  const wheel = (e: WheelEvent) => {
-    const el = e.currentTarget as HTMLElement;
-    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX) || el.scrollWidth <= el.clientWidth) return;
-    el.scrollLeft += e.deltaY;
-    e.preventDefault();
+  const loc = useLocation();
+  let chips!: HTMLElement;
+
+  // Sums chip widths (hidden chips keep theirs) so the result does not depend on the current layout;
+  // the More button always holds its place, so the bar's width does not change with the result.
+  const measure = () => {
+    if (!chips) return;
+    const limit = chips.clientWidth;
+    let used = 0;
+    const all = [...chips.querySelectorAll<HTMLElement>(".chip")];
+    const n = all.findIndex((c, i) => (used += c.offsetWidth + (i ? GAP : 0)) > limit);
+    setFit(n < 0 ? Infinity : n);
   };
+  onMount(() => {
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(chips);
+    onCleanup(() => ro.disconnect());
+  });
+  createEffect(on(libs, () => requestAnimationFrame(measure)));
+
+  const back = () => (history.length > 1 ? history.back() : nav("/"));
+
   return (
     <header class="topbar">
-      <button class="icon menu-btn" onClick={() => setDrawer(true)} aria-label="Libraries"><Icon name="menu" /></button>
+      <Show when={loc.pathname !== "/"}>
+        <button class="icon back-btn" onClick={back} aria-label="Back"><Icon name="back" /></button>
+      </Show>
       <A
         href="/"
         class="brand"
         end
         onClick={(e) => {
-          // Phones have no room for the menu button: the logo opens the library list.
+          // Phones have no room for the library bar: the logo opens the library list.
           if (narrow()) {
             e.preventDefault();
-            setDrawer(true);
+            setMore(true);
           }
         }}
       >
         <img src="/favicon.svg" alt="" width="26" height="26" />
         <span>Kellyfin</span>
       </A>
-      <nav class="chips" onWheel={wheel}>
-        <For each={libs()}>{(l) => <A href={`/library/${l.id}`} class="chip">{l.name}</A>}</For>
+      <nav class="chips" ref={chips}>
+        <For each={libs()}>
+          {(l, i) => (
+            <A href={`/library/${l.id}`} class="chip" classList={{ "chip-hidden": i() >= fit() }}>{l.name}</A>
+          )}
+        </For>
       </nav>
+      <button class="more-btn" classList={{ unused: fit() >= (libs()?.length ?? 0) }} onClick={() => setMore(!more())}>More ▾</button>
       <A href="/search" class="icon search-btn" aria-label="Search"><Icon name="search" /></A>
       <div class="avatar-wrap">
         <button class="avatar" onClick={() => setMenu(!menu())} aria-label="Account">
@@ -104,8 +121,9 @@ export default function TopBar() {
           </div>
         </Show>
       </div>
-      <Show when={drawer()}>
-        <Sidebar libs={libs() ?? []} onClose={() => setDrawer(false)} />
+      <Show when={more()}>
+        {/* On wide screens only the libraries that did not fit; on phones all of them. */}
+        <LibraryMenu libs={narrow() ? libs() ?? [] : (libs() ?? []).slice(fit())} onClose={() => setMore(false)} />
       </Show>
     </header>
   );

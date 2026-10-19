@@ -73,52 +73,59 @@ select, input {
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 17px; flex: none; }
 .chips {
+  position: relative; /* chips' offsetLeft is measured from here */
   display: flex;
   gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
+  overflow: hidden;
   flex: 1;
   min-width: 0;
 }
-.chips::-webkit-scrollbar { height: 0; }
-/* A thin scrollbar shows on hover so mouse users see the bar scrolls. */
-.chips:hover { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
-.chips:hover::-webkit-scrollbar { height: 4px; }
-.chips:hover::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
-.menu-btn { flex: none; margin-right: -8px; }
-.drawer-shade { position: fixed; inset: 0; z-index: 30; background: rgba(0, 0, 0, 0.5); }
-.drawer {
-  position: fixed;
+.chip-hidden { visibility: hidden; position: absolute; }
+.more-btn {
+  flex: none;
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.more-btn:hover { color: var(--text); background: var(--surface-2); }
+.more-btn.unused { visibility: hidden; }
+.back-btn { flex: none; margin-right: -6px; }
+.more-shade { position: fixed; inset: 0; z-index: 30; }
+.more-menu {
+  position: absolute;
   z-index: 31;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: min(320px, 85vw);
+  top: calc(100% + 4px);
+  right: var(--gutter);
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(70vh, 640px);
   display: flex;
   flex-direction: column;
-  padding: 10px 8px max(10px, env(safe-area-inset-bottom));
-  padding-top: max(10px, env(safe-area-inset-top));
-  background: var(--surface);
-  border-right: 1px solid var(--line);
-  box-shadow: 8px 0 32px rgba(0, 0, 0, 0.5);
+  padding: 8px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
 }
-.drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 10px; }
-.drawer-head .brand span { display: inline; }
-.drawer-filter { margin: 8px 6px; color: var(--text); }
-.drawer-list { overflow-y: auto; flex: 1; min-height: 0; }
-.drawer-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 9px 12px;
-  border-radius: 8px;
-  font-size: 14px;
-}
-.drawer-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.drawer-item small { color: var(--muted); flex: none; }
-.drawer-item:hover, .drawer-item.active { background: var(--surface-2); }
-.drawer-item.active { color: var(--accent-2); }
+.more-filter { margin-bottom: 6px; color: var(--text); }
+.more-list { overflow-y: auto; min-height: 0; }
+.more-item { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 6px; font-size: 14px; }
+.more-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.more-item small { color: var(--muted); }
+.more-item:hover, .more-item.active { background: var(--line); }
+.more-item.active { color: var(--accent-2); }
+.view-toggle { display: flex; gap: 4px; }
+.view-toggle .icon.on { background: var(--surface-2); }
+.head-tools { display: flex; align-items: center; gap: 10px; }
+.rows { display: flex; flex-direction: column; padding: 0 var(--gutter); }
+.row-item { display: flex; align-items: center; gap: 14px; padding: 8px 0; border-top: 1px solid var(--line); content-visibility: auto; contain-intrinsic-size: auto 84px; }
+.row-item .thumb { width: 120px; flex: none; }
+.row-item .row-text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.badge.static { position: static; flex: none; }
+.row-item .row-text b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip {
   flex: none;
   padding: 5px 12px;
@@ -566,7 +573,10 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
   .row-nav { display: none; }
   .topbar { gap: 10px; }
   .brand span { display: none; }
-  .menu-btn { display: none; }
+  .chips, .more-btn { display: none; }
+  .search-btn { margin-left: auto; }
+  .more-menu { left: 12px; right: 12px; width: auto; }
+  .row-item .thumb { width: 104px; }
   .detail-body { margin-top: -60px; }
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings { grid-template-columns: 1fr; }

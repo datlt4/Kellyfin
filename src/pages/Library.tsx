@@ -1,13 +1,49 @@
-import { useParams } from "@solidjs/router";
+import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
-import { api, type Card, type Lib } from "../api";
+import { api, fmtDuration, fmtRes, img, type Card, type Lib } from "../api";
 import { ItemCard } from "../components/Card";
+import Icon from "../components/Icon";
 
 const PAGE = 120;
+
+type View = "grid" | "list";
+const savedView = (): View => {
+  try {
+    return localStorage.getItem("libView") === "list" ? "list" : "grid";
+  } catch {
+    return "grid";
+  }
+};
+
+/** Compact row: small thumbnail, title, length, progress. */
+function ItemRow(props: { item: Card }) {
+  const it = () => props.item;
+  const pct = () => (it().duration && it().position ? Math.min(100, (it().position / it().duration!) * 100) : 0);
+  return (
+    <A href={`/item/${it().id}`} class="row-item">
+      <div class="thumb" style={{ "background-color": it().color ?? undefined }}>
+        <Show when={img(it(), "s")}>{(src) => <img src={src()} alt="" loading="lazy" decoding="async" />}</Show>
+        <Show when={pct() > 0}><div class="progress"><div style={{ width: `${pct()}%` }} /></div></Show>
+      </div>
+      <div class="row-text">
+        <b title={it().title}>{it().title}</b>
+        <span class="muted small">{[fmtDuration(it().duration), fmtRes(it().height, it().width)].filter(Boolean).join(" · ")}</span>
+      </div>
+      <Show when={it().played}><span class="badge static"><Icon name="check" size={14} /></span></Show>
+    </A>
+  );
+}
 
 export default function Library() {
   const params = useParams();
   const [sort, setSort] = createSignal<"title" | "added">("title");
+  const [view, setViewSignal] = createSignal<View>(savedView());
+  const setView = (v: View) => {
+    setViewSignal(v);
+    try {
+      localStorage.setItem("libView", v);
+    } catch {}
+  };
   const [lib] = createResource(() => params.id, (id) => api<Lib>(`/libraries/${id}`));
   const [items, setItems] = createSignal<Card[]>([]);
   const [total, setTotal] = createSignal(-1);
@@ -49,14 +85,23 @@ export default function Library() {
           <h1>{lib()?.name}</h1>
           <span class="muted"><Show when={total() >= 0}>{total()} videos</Show></span>
         </div>
-        <select value={sort()} onChange={(e) => setSort(e.currentTarget.value as "title" | "added")}>
-          <option value="title">A – Z</option>
-          <option value="added">Recently added</option>
-        </select>
+        <div class="head-tools">
+          <select value={sort()} onChange={(e) => setSort(e.currentTarget.value as "title" | "added")}>
+            <option value="title">A – Z</option>
+            <option value="added">Recently added</option>
+          </select>
+          <div class="view-toggle">
+            <button class="icon" classList={{ on: view() === "grid" }} onClick={() => setView("grid")} aria-label="Grid view" title="Grid view"><Icon name="grid" size={20} /></button>
+            <button class="icon" classList={{ on: view() === "list" }} onClick={() => setView("list")} aria-label="List view" title="List view"><Icon name="list" size={20} /></button>
+          </div>
+        </div>
       </div>
-      <div class="grid">
-        <For each={items()}>{(it) => <ItemCard item={it} />}</For>
-      </div>
+      <Show
+        when={view() === "list"}
+        fallback={<div class="grid"><For each={items()}>{(it) => <ItemCard item={it} />}</For></div>}
+      >
+        <div class="rows"><For each={items()}>{(it) => <ItemRow item={it} />}</For></div>
+      </Show>
       <div ref={sentinel} class="sentinel" />
     </div>
   );
