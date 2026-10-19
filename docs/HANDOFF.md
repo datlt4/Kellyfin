@@ -1,6 +1,7 @@
 # Kellyfin — handoff
 
-State on 2026-10-20, version **0.8.0** (branch `dev`; `main` holds only the initial commit).
+State on 2026-10-20, version **1.0.0** — first release: `dev` was fast-forwarded into `main`, which runs
+`release.yml` (branch `release/v1.0.0`, tag `v1.0.0`, GitHub release with desktop and mobile builds).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
 (most choices came from measurements on the real library), how to build and ship without GitHub Actions,
@@ -235,8 +236,8 @@ cast, untested with a real receiver (none was found on the mini PC's LAN).
 
 ### Versioning
 
-SemVer `0.MINOR.PATCH`: a minor per finished phase/feature set, a patch per fix — **every shipped change bumps
-it** (owner's rule). Use `scripts/set-version.sh X.Y.Z`; it updates `package.json`, both `Cargo.toml`/`Cargo.lock`,
+SemVer: a minor per feature set, a patch per fix — **every shipped change bumps it** (owner's rule).
+1.0.0 was the first release (0.x was development). Use `scripts/set-version.sh X.Y.Z`; it updates `package.json`, both `Cargo.toml`/`Cargo.lock`,
 `tauri.conf.json`. Images: Docker Hub `hienanh/kellyfin` (`:dev` + `:X.Y.Z-dev` from dev, `:latest` + `:X.Y.Z` from main).
 
 ### CI is the build system
@@ -296,9 +297,9 @@ the A8 Star is the Samsung G885F). A free Apple ID allows only 3 sideloaded apps
 ## 6. Open items
 
 1. **Run the repair on the server** (Dashboard → Check → Fix): 6 wrong Jumong items; review the 39 others.
-2. **Finish P5**: add repo secrets `ANDROID_KEYSTORE_B64/PASS` (keystore in `~/.config/kellyfin/`), merge `dev`
-   into `main` to publish through `release.yml`, then activate the two re-sign jobs on mabu and install on the
-   iPhone and the A8 Star.
+2. **Finish P5**: check the v1.0.0 release run and assets; confirm repo secrets `ANDROID_KEYSTORE_B64/PASS`
+   (keystore in `~/.config/kellyfin/`) — without them the APK is signed with a throwaway key; then activate the two
+   re-sign jobs on mabu and install on the iPhone and the A8 Star.
 3. **Linux arm64 desktop** is covered by CI (`ubuntu-22.04-arm`); locally it would need QEMU binfmt.
 4. **Verify on real devices**: hev1/remux rules on iOS, header proxy in the apps, Android WebView fullscreen
    and PiP (may need a native plugin), Chromecast/AirPlay.
@@ -333,7 +334,8 @@ the A8 Star is the Samsung G885F). A free Apple ID allows only 3 sideloaded apps
 | `00b81e1`, `23d76ae` | | this handoff, `publish-release.sh`, Windows local build on Ubuntu 24.04 | Ubuntu 22.04's NSIS 3.08 lacks `Win\RestartManager.nsh`. CI then went green for build + mobile (first APK/IPA). |
 | `bd4c505` | 0.7.0 | icon controls with menus, dual subtitles, search icon redrawn | Hand-written SVG paths can render wrong: render every icon to a contact sheet to check. |
 | `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
-| (this) | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
+| `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
+| (release) | 1.0.0 | first release: `dev` → `main` | The PAT cannot list Actions secrets, so the APK keystore secrets were not verified before release. |
 
 ## 8. P7 — AI upscale (planned, nothing built)
 

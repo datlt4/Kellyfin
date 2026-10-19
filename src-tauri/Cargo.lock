@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "kellyfin"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "rand 0.8.8",
