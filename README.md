@@ -59,6 +59,9 @@ Kellyfin was written to fix what hurt in daily Jellyfin use on a small home serv
 - Users, avatars, passwords; dashboard with now-playing sessions, scans, restart.
 - Apps for Windows, macOS, Linux, Android and iOS. Several servers can be saved and switched in one tap,
   including servers behind an authenticating proxy such as Pangolin that needs extra request headers.
+- The apps check for new versions: desktop apps update themselves (signed), Android opens the new APK.
+- **AI upscaling (experimental)**: GPU workers turn low-resolution videos into 1080p copies, chosen per library
+  or episode, that appear as an extra quality in the player.
 
 ## Screenshots
 
@@ -163,6 +166,20 @@ docker compose run --rm -v $PWD/jellyfin-export:/exp:ro kellyfin kellyfin import
 Mount the media at the same paths Jellyfin used, or map them with `--map /old/path=/new/path`.
 Jellyfin passwords cannot be exported: set them again with `docker exec kellyfin kellyfin passwd <user> <password>`.
 Afterwards, **Dashboard → Wrong titles and thumbnails** finds names and posters Jellyfin had matched to the wrong film.
+
+## AI upscaling (experimental)
+
+A worker runs on a machine with an NVIDIA GPU, asks the server for jobs, and uploads the upscaled video. It needs no
+open port: it only connects to the server.
+
+```sh
+cd upscaler
+KELLYFIN_URL=http://<server>:8024 KELLYFIN_UPSCALER_TOKEN=<token from Settings → AI upscale> docker compose up -d
+```
+
+Then queue a library in **Settings → AI upscale**, or one episode with **AI upscale** on its page. Models: `lanczos`
+(a plain resize, to try the pipeline), `realesrgan-anime` when `realesrgan-ncnn-vulkan` is installed, and your own
+trained models as `upscaler/models/<name>.sh` scripts (see the README there).
 
 ## Command line
 

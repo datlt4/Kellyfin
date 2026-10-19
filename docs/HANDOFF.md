@@ -1,6 +1,6 @@
 # Kellyfin — handoff
 
-State on 2026-10-20, version **1.5.0** (released). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
+State on 2026-10-20, version **2.0.0** (in-app updates, AI upscaling, Jellyfin retired). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
 `release.yml` (branch `release/v1.0.0`, tag `v1.0.0`, GitHub release with desktop and mobile builds).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
@@ -33,7 +33,7 @@ A self-hosted replacement for Jellyfin, written from scratch:
 | P4 | Settings, dashboard, users, libraries, search, title-based suggestions | done |
 | P5 | Multi-platform releases, mobile apps, IPA re-sign jobs | **v1.0.0 released** (https://github.com/datlt4/Kellyfin/releases/tag/v1.0.0); re-sign jobs and device installs still to do (§6) |
 | P6 | Chromecast + AirPlay | code done, **not tested with a real device** |
-| P7 | AI upscale (GPU server) | not started (§8) |
+| P7 | AI upscale (GPU server) | **pipeline done** with a stub model; waiting for trained models (§8) |
 
 ---
 
@@ -50,7 +50,10 @@ On the mini PC:
 - Compose project: `/home/mini/Software/kellyfin/` (`docker-compose.yml` + `.env` with `KELLYFIN_TAG=dev`).
 - Data (SQLite DB, images, transcode scratch): `/mnt/das_8tb/kellyfin_volume/data`.
 - Jellyfin export used for the migration: `/mnt/das_8tb/kellyfin_volume/jellyfin-export/`.
-- Kellyfin listens on **:8024** (→ container :8080). Jellyfin keeps running on :8021, untouched.
+- Kellyfin listens on **:8024** (→ container :8080). Jellyfin was retired on 2026-10-20: container, image,
+  `config/` and `cache/` removed; `/home/mini/Software/jellyfin/docker-compose.yml` kept; the videos and subtitles in
+  `jellyfin_volume/{media,movies,hanzii}` and `metube_volume` are untouched (Kellyfin uses them). The Jellyfin
+  export in `kellyfin_volume/jellyfin-export/` is the only copy of its metadata.
 - Media is mounted **read-only** at the same paths Jellyfin uses: `/media`, `/movies`, `/hanzii`, `/metube_volume`.
 - Public URL `https://kellyfin.ft-tech.io.vn` (reverse proxy; may sit behind Pangolin with header auth).
 - GPU: `/dev/dri` + group `110` (render) for VAAPI.
@@ -63,7 +66,8 @@ Secrets (never commit them):
 | Android release keystore + password | `~/.config/kellyfin/android-release.{jks,pass}` on koi-pc **and** mabu (back it up: losing it means users must uninstall to update) |
 | GitHub token (contents: write on datlt4/Kellyfin) | `~/.config/kellyfin/github-token` on koi-pc |
 | Docker Hub (`hienanh`) | `docker login` on koi-pc; repo secrets `DOCKERHUB_USERNAME/TOKEN` for CI |
-| Jellyfin API key | Jellyfin dashboard → API Keys (only needed to re-run the export) |
+| Tauri updater signing key + password + public key | `~/.config/kellyfin/tauri-updater.{key,pass,key.pub}` on koi-pc; repo secrets `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)`; losing it strands installed desktop apps on their version |
+| Upscaler worker token | Settings → AI upscale (setting `upscaler.token`) |
 
 ---
 
@@ -84,6 +88,7 @@ server/                 Rust server (binary `kellyfin`)
   src/manifest.rs       portable export format (manifest.json + images/)
   src/jellyfin.rs       read-only export from a Jellyfin server into that format
   src/settings.rs       key/value settings (transcode.hwaccel, transcode.device)
+  src/upscale.rs        AI upscale job queue, worker API, upscaled versions
   Dockerfile            web build + server build + Debian runtime (ffmpeg, mesa VAAPI)
   docker-compose.yml    the mini PC deployment
 src/                    SolidJS client
@@ -91,9 +96,11 @@ src/                    SolidJS client
   playback.ts           playability decisions, quality ladder, bandwidth test, VTT parser
   cast.ts               Chromecast sender + AirPlay
   native.ts             device brightness / volume / fullscreen (Android bridge, iOS Tauri commands)
+  update.ts             app update check / install (not on the web)
   pages/                Home, Library, Item, Player, Settings (5 tabs), Search, Login
   components/           TopBar, Row (shelf), Card, Icon (SVG), FolderPicker
-src-tauri/              Tauri shell; src/proxy.rs = local header-adding proxy
+src-tauri/              Tauri shell; src/proxy.rs = local header-adding proxy, src/update.rs = updates
+upscaler/               experimental GPU upscale worker (Python + ffmpeg), Dockerfile, GPU compose, models/
   android/apply.sh      patches the generated Android project (cleartext http, gradle repos)
 scripts/
   set-version.sh        sets the version in every manifest and lockfile
@@ -273,6 +280,18 @@ Reason: `<video>`/`<img>` cannot send custom headers. Tested by a unit test only
   `"false"` for release builds, so v1.0.0 could not reach `http://24.8.0.2:8024` (Chrome could). `apply.sh` now flips
   the placeholder and fails if it is still false; `mobile.yml` checks the signed APK's manifest with `aapt`.
 
+### 4.7c App updates
+
+`src-tauri/src/update.rs` (from Kermius) + `src/update.ts`: checked 5 s after start (banner "Kellyfin X is
+available" with Update / Later) and by "Check for updates" in Settings → Profile → About.
+- Desktop: `tauri-plugin-updater` reads `releases/latest/download/latest.json`, verifies the minisign signature with
+  the public key in `tauri.conf.json`, installs and restarts. `release.yml` signs bundles with the
+  `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)` secrets (`createUpdaterArtifacts: true`) and the publish job assembles
+  `latest.json` from every platform's `.sig`; it fails the run if no signed bundle exists (missing secrets).
+- Android: compares with GitHub's latest release and opens the APK download (`open_release`, restricted to this
+  repo's URLs); the mabu dashboard also auto-installs. iOS: only reports; the re-sign job installs.
+- The web build never checks (the server is updated with Docker).
+
 ### 4.8 Cast
 
 Chromecast uses the Cast Web Sender SDK (Chrome only, not Tauri webviews): the TV fetches the original MP4 if
@@ -350,6 +369,9 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 ## 6. Open items
 
 1. **Run the repair on the server** (Dashboard → Check → Fix): 6 wrong Jumong items; review the 39 others.
+1b. Confirm the `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)` secrets are set, or `release.yml` fails (desktop bundles and
+    latest.json need them). Start an upscale worker permanently on koi-pc (`upscaler/docker-compose.yml`) when
+    trained models exist.
 2. **Finish P5**: v1.0.0 is out and installed on the A8 Star; the iOS job needs one successful run with the
    iPhone reachable (unlock it near mabu or plug USB, then "Resign ngay"); first iOS install also tests the
    free-account 3-app limit.
@@ -359,12 +381,10 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 5. Disk on koi-pc: Rust/Docker build outputs were deleted on request (~19 GB). `server/target`,
    `src-tauri/target` and the `rust:1-bookworm` image come back whenever tests run locally — delete them after.
    Docker's build cache (~75 GB, mostly other projects) was left alone.
-6. Android/iOS apps have no in-app updater (Kermius uses the Tauri updater with signing keys; not set up here).
-7. User `koi` (imported from Jellyfin, id 1) disappeared from the server between 2026-10-19 and 10-20; the
+6. User `koi` (imported from Jellyfin, id 1) disappeared from the server between 2026-10-19 and 10-20; the
    server has no request log, so when/how is unknown. It can be recreated from the Jellyfin export (9 progress
    entries; password must be set again) — waiting for the owner.
-8. The owner may want to retire Jellyfin once satisfied; Kellyfin never writes to media folders.
-9. P7 (§8).
+7. P7 next steps (§8): trained models, live upscaling.
 
 ## 7. Commit history (what each step did and what it taught)
 
@@ -391,7 +411,8 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `bd4c505` | 0.7.0 | icon controls with menus, dual subtitles, search icon redrawn | Hand-written SVG paths can render wrong: render every icon to a contact sheet to check. |
 | `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
-| (release) | 1.5.0 | device brightness/volume/landscape fullscreen in the apps, centre player controls, top-bar safe-area fix, one view button | A fixed-height bar with safe-area padding squeezes its content; CSS rules declared earlier lose to later ones of equal specificity (twice). |
+| (release) | 2.0.0 | in-app updates (signed desktop updater, APK link, iOS notice), AI upscale pipeline + worker, back button on the server picker, Jellyfin retired | Drive the updater from Rust commands (no extra webview permissions); the upscale worker pulls work so the GPU PC needs no inbound access. |
+| `2cdef6b` | 1.5.0 | device brightness/volume/landscape fullscreen in the apps, centre player controls, top-bar safe-area fix, one view button | A fixed-height bar with safe-area padding squeezes its content; CSS rules declared earlier lose to later ones of equal specificity (twice). |
 | `8254c7f` | 1.4.0 | Jellyfin-style More menu instead of the sidebar, ← button, Android back + double-back exit, grid/list view | Measuring which chips fit must not depend on a button that the result itself shows or hides (it clipped the last chip). Released (20 assets, CI green); A8 Star updated 1.2.0 → 1.4.0. |
 | `80c47a4` | 1.3.0 | library sidebar (☰ on PC, logo on phones), wheel scrolls the chip bar | Hidden scrollbars leave mouse users stuck: map vertical wheel to horizontal scroll. |
 | `78e547f` | 1.2.0 | iOS/macOS/Linux apps reach plain-http servers via the local proxy; app and server versions shown | The iOS failure was WebKit mixed-content blocking from `tauri://`, not ATS. Released (20 assets, all CI green); the A8 Star updated 1.1.0 → 1.2.0; not yet verified on a real iPhone. |
@@ -399,10 +420,20 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | (docs) | | README rewritten for GitHub visitors, 12 screenshots | Retake shots by driving the live server with Playwright (desktop 1440×900, Galaxy S9+ portrait/landscape); Escape in the player goes back, so do not press it between shots. |
 | `15f74c2` | 1.0.0 | first release: `dev` → `main` | First `release.yml` run: every job green; 20 assets (deb/rpm/AppImage x64+arm64, dmg/app x64+arm64, NSIS/MSI/portable x64+x86+arm64, APK, unsigned IPA). The PAT cannot list Actions secrets, so the APK keystore secrets were not verified. |
 
-## 8. P7 — AI upscale (planned, nothing built)
+## 8. P7 — AI upscale (experimental pipeline)
 
-Owner's idea: some shows are only available at 144p; a model trained per show would upscale to FHD on the
-RTX 3060 PC. Planned shape: a separate GPU service (`kellyfin-upscaler`, HTTP job API) on koi-pc; a table
-assigning a model to libraries/episodes; first offline pre-upscale into an extra "1080p AI" version of the file,
-later live upscaling of HLS segments. Start with a stub model (lanczos or a pretrained Real-ESRGAN) to build the
-pipeline before any training.
+Built on 2026-10-20 and verified end to end with the stub model (Lucky Luke trailer 854×468 → 1970×1080 with NVENC
+on the RTX 3060 in 13 s, uploaded over WireGuard, played as "AI · lanczos").
+
+- **Pull model**: workers only make outgoing requests, so the GPU PC needs no open port. `POST /api/upscaler/claim`
+  (header `X-Upscaler-Token`) announces the worker and its models and atomically takes the oldest queued job for one
+  of them (running jobs silent for 10 min are reassigned); then `GET …/jobs/{id}/source`, `POST …/progress`,
+  `PUT …/result` (streamed to `data/upscaled/<item>-<model>.mp4`, probed, job → done) or `POST …/fail`.
+- **Assignment** = a job `(item, model)`: Settings → AI upscale queues a whole library, the video page's
+  "AI upscale" button one episode; failed jobs are retried by queuing again. Workers online are kept in memory.
+- **Playback**: finished versions are listed in `ItemDetail.upscaled`; the player's quality menu offers
+  "AI · model (1080p)", which plays `/api/items/{id}/upscaled/{model}` directly.
+- **Worker** (`upscaler/kellyfin_upscaler.py`, stdlib + ffmpeg; image `hienanh/kellyfin-upscaler` from CI; compose
+  with the NVIDIA GPU): models `lanczos` (stub), `realesrgan-anime` when `realesrgan-ncnn-vulkan` is on PATH, and
+  any `models/<name>.sh` (`INPUT OUTPUT TARGET_HEIGHT` → MP4) — that is where trained models go.
+- Not done: live (per-HLS-segment) upscaling; per-library default model; worker not running permanently anywhere.
