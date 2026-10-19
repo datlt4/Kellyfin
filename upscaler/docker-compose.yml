@@ -1,0 +1,21 @@
+# Runs on the GPU machine (e.g. koi-pc with the RTX 3060); it only makes outgoing requests to Kellyfin.
+services:
+  kellyfin-upscaler:
+    build: .
+    image: hienanh/kellyfin-upscaler:${KELLYFIN_TAG:-latest}
+    container_name: kellyfin-upscaler
+    restart: unless-stopped
+    environment:
+      KELLYFIN_URL: ${KELLYFIN_URL:-http://24.8.0.2:8024}
+      KELLYFIN_UPSCALER_TOKEN: ${KELLYFIN_UPSCALER_TOKEN:?copy it from Settings -> AI upscale}
+      WORKER_NAME: ${WORKER_NAME:-koi-pc}
+      TARGET_HEIGHT: ${TARGET_HEIGHT:-1080}
+    volumes:
+      - ./models:/app/models:ro          # your trained models as <name>.sh scripts
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video, compute]

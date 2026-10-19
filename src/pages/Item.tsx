@@ -1,6 +1,6 @@
 import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, Show } from "solid-js";
-import { api, fmtClock, fmtDuration, fmtRes, img, streamLabel, subLabel, upload, user, type ItemDetail, type Related } from "../api";
+import { api, fmtClock, fmtDuration, fmtRes, img, streamLabel, subLabel, upload, user, type ItemDetail, type Related, type UpscaleOverview } from "../api";
 import { ItemCard, LibCard } from "../components/Card";
 import Row from "../components/Row";
 import Icon from "../components/Icon";
@@ -44,6 +44,17 @@ export default function Item() {
       refetch();
     };
     input.click();
+  }
+
+  // Experimental: queue this episode for a GPU worker's model.
+  async function aiUpscale() {
+    const ov = await api<UpscaleOverview>("/admin/upscale");
+    const models = [...new Set(ov.workers.flatMap((w) => w.models.map((m) => m.name)))];
+    if (!models.length) return alert("No upscale worker is online (Settings → AI upscale).");
+    const m = prompt(`Model (${models.join(", ")})`, models[0]);
+    if (!m) return;
+    await api("/admin/upscale/jobs", { method: "POST", body: JSON.stringify({ model: m, item_ids: [item()!.id] }) });
+    alert(`Queued with ${m}. Progress: Settings → AI upscale.`);
   }
 
   async function autoImage() {
@@ -109,6 +120,7 @@ export default function Item() {
                 <button class="btn small" onClick={rename}>Edit title</button>
                 <button class="btn small" onClick={changeImage}>Change image</button>
                 <button class="btn small" onClick={autoImage} title="Grab a frame from the video">Auto image</button>
+                <button class="btn small" onClick={() => aiUpscale().catch((e) => alert(e.message))}>AI upscale</button>
               </div>
               <p class="path">{it().path}</p>
             </Show>

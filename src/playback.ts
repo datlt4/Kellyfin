@@ -2,7 +2,7 @@ import type { ItemDetail, Stream, SubTrack } from "./api";
 
 export type Mode = "direct" | "remux" | "hls";
 /** "orig": the file itself (direct/remux); "auto": adaptive transcode; number: fixed transcode height. */
-export type Quality = "orig" | "auto" | number;
+export type Quality = "orig" | "auto" | number | `ai:${string}`;
 
 // A bigger MP4 index delays the first frame by seconds over VPN; a copy-remux starts at once.
 const MAX_DIRECT_INDEX = 4 * 1024 * 1024;

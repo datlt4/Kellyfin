@@ -12,6 +12,7 @@ mod scan;
 mod settings;
 mod stream;
 mod transcode;
+mod upscale;
 mod util;
 
 use anyhow::{bail, Context};
@@ -42,6 +43,7 @@ pub struct AppState {
     pub scanner: Arc<scan::Scanner>,
     pub transcoder: Arc<transcode::Transcoder>,
     pub sessions: Arc<admin::Sessions>,
+    pub upscale_workers: Arc<upscale::Workers>,
 }
 
 /// Value of `--name VALUE`.
@@ -106,7 +108,7 @@ async fn serve(cfg: Config, db: SqlitePool, images: PathBuf) -> anyhow::Result<(
     let listener = tokio::net::TcpListener::bind(&cfg.addr).await?;
     tracing::info!("listening on {}", cfg.addr);
     let transcoder = transcode::Transcoder::new(cfg.data.join("transcode"));
-    let st = AppState { db, cfg: Arc::new(cfg), images, scanner: Default::default(), transcoder, sessions: Default::default() };
+    let st = AppState { db, cfg: Arc::new(cfg), images, scanner: Default::default(), transcoder, sessions: Default::default(), upscale_workers: Default::default() };
     axum::serve(listener, api::router(st)).with_graceful_shutdown(shutdown()).await?;
     Ok(())
 }

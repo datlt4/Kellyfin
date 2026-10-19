@@ -41,6 +41,7 @@ export type ItemDetail = Card & {
   ext: string;
   subtitles: SubTrack[];
   index_size: number | null;
+  upscaled: { model: string; width: number | null; height: number | null }[];
   prev_id: number | null;
   next_id: number | null;
 };
@@ -60,6 +61,15 @@ export type Info = {
 export type UserRow = { id: number; name: string; is_admin: boolean; has_password: boolean; created_at: number };
 export type LibRow = { id: number; name: string; kind: string; paths: string[]; count: number; has_image: boolean };
 export type FsList = { path: string; parent: string | null; dirs: string[] };
+export type UpscaleModel = { name: string; description: string };
+export type UpscaleOverview = {
+  token: string;
+  workers: { name: string; models: UpscaleModel[]; seen_secs_ago: number }[];
+  jobs: {
+    id: number; item_id: number; title: string; library: string; model: string; status: string;
+    progress: number; error: string | null; worker: string | null; height: number | null; updated_at: number;
+  }[];
+};
 export type ScanStatus = { running: boolean; phase: string; done: number; total: number; error: string | null; finished_at: number | null };
 
 export const isTauri = "__TAURI_INTERNALS__" in window;

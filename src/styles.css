@@ -528,6 +528,7 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
 .stats div { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; }
 .stats b { font-size: 24px; }
 .stats span { color: var(--muted); font-size: 13px; }
+.snippet { white-space: pre-wrap; word-break: break-all; font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
 .suspects { max-height: 320px; overflow: auto; display: flex; flex-direction: column; }
 .suspect { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }
 .sub-title { font-size: 15px; margin: 16px 0 2px; }

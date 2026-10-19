@@ -1,13 +1,13 @@
 use crate::{
     auth::{self, Admin, User},
     error::{ApiError, ApiResult},
-    admin, recommend, repair, scan, settings, stream, transcode, AppState,
+    admin, recommend, repair, scan, settings, stream, transcode, upscale, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderValue, StatusCode},
     extract::DefaultBodyLimit,
-    routing::{get, patch, post, put},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,10 @@ pub fn router(st: AppState) -> Router {
         .route("/admin/settings", get(settings::list).put(settings::update))
         .route("/admin/info", get(admin::info))
         .route("/admin/repair", post(repair::repair))
+        .route("/admin/upscale", get(upscale::overview))
+        .route("/admin/upscale/token", post(upscale::new_token))
+        .route("/admin/upscale/jobs", post(upscale::queue))
+        .route("/admin/upscale/jobs/{id}", delete(upscale::delete_job))
         .route("/admin/restart", post(admin::restart))
         .route("/admin/shutdown", post(admin::shutdown))
         .route("/admin/export", get(admin::export))
@@ -66,6 +70,13 @@ pub fn router(st: AppState) -> Router {
         .route("/items/{id}/remux", get(stream::remux))
         .route("/items/{id}/keyframe", get(stream::keyframe))
         .route("/speedtest", get(stream::speedtest))
+        .route("/items/{id}/upscaled/{model}", get(upscale::play))
+        // GPU workers (upscaler/): results are whole video files, so no body limit.
+        .route("/upscaler/claim", post(upscale::claim))
+        .route("/upscaler/jobs/{id}/source", get(upscale::source))
+        .route("/upscaler/jobs/{id}/progress", post(upscale::progress))
+        .route("/upscaler/jobs/{id}/fail", post(upscale::fail))
+        .route("/upscaler/jobs/{id}/result", put(upscale::result).layer(DefaultBodyLimit::disable()))
         .route("/items/{id}/hls/{p}/{audio}/{file}", get(transcode::hls_file));
     let api = api.merge(media).layer(CorsLayer::permissive());
 
@@ -256,6 +267,9 @@ struct ItemDetail {
     prev_id: Option<i64>,
     #[sqlx(skip)]
     next_id: Option<i64>,
+    /// Finished AI-upscaled versions (experimental).
+    #[sqlx(skip)]
+    upscaled: Vec<upscale::Version>,
 }
 
 async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> ApiResult<Json<ItemDetail>> {
@@ -295,6 +309,7 @@ async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> Ap
             .fetch_optional(&st.db)
             .await?;
     }
+    d.upscaled = upscale::versions(&st, d.card.id).await?;
     // Last episode: continue with the next season's library.
     if d.next_id.is_none() {
         d.next_id = recommend::next_season(&st.db, d.card.library_id).await?;

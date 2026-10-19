@@ -90,7 +90,13 @@ function PlayerView(props: { id: string }) {
     hls = null;
     setLevelP(null);
     if (mode() === "hls") return loadHls(at, gen);
-    if (mode() === "direct") {
+    const q = quality();
+    if (typeof q === "string" && q.startsWith("ai:")) {
+      // An AI-upscaled version: a plain MP4 played as-is.
+      setOffset(0);
+      pendingSkip = at;
+      video.src = mediaUrl(`/items/${it.id}/upscaled/${encodeURIComponent(q.slice(3))}`);
+    } else if (mode() === "direct") {
       setOffset(0);
       pendingSkip = at;
       video.src = mediaUrl(`/items/${it.id}/file`);
@@ -174,13 +180,14 @@ function PlayerView(props: { id: string }) {
 
   /** Original file when the browser can play it, else a transcode. */
   function modeFor(it: ItemDetail, a: number | null, q: Quality): Mode {
+    if (typeof q === "string" && q.startsWith("ai:")) return "direct";
     const m = (q === "orig" && originalMode(it, a)) || "hls";
     if (m === "hls" && q === "orig") setQuality("auto"); // original not playable here
     return m;
   }
 
   function changeQuality(v: string) {
-    const q: Quality = v === "orig" || v === "auto" ? v : Number(v);
+    const q: Quality = v === "orig" || v === "auto" || v.startsWith("ai:") ? (v as Quality) : Number(v);
     const it = item()!;
     setQuality(q);
     remember("quality", String(q));
@@ -615,6 +622,7 @@ function PlayerView(props: { id: string }) {
                     ...(originalMode(it, audio()) ? [{ value: "orig", label: "Original" }] : []),
                     { value: "auto", label: `Auto${mode() === "hls" && quality() === "auto" && levelP() ? ` (${levelP()}p)` : ""}` },
                     ...qualities(it).map((p) => ({ value: String(p), label: `${p}p` })),
+                    ...it.upscaled.map((u) => ({ value: `ai:${u.model}`, label: `AI · ${u.model}${u.height ? ` (${Math.min(u.width ?? u.height, u.height)}p)` : ""}` })),
                   ],
                   onPick: pick(changeQuality),
                 };
@@ -742,7 +750,7 @@ function PlayerView(props: { id: string }) {
           <button class="icon" onClick={fullscreen} aria-label="Fullscreen"><Icon name="fullscreen" /></button>
         </div>
         <span class="p-mode">
-          {mode() === "direct" ? "Direct play" : mode() === "remux" ? "Remux" : `Transcode${levelP() ? ` ${levelP()}p` : ""}`}
+          {String(quality()).startsWith("ai:") ? `AI upscale · ${String(quality()).slice(3)}` : mode() === "direct" ? "Direct play" : mode() === "remux" ? "Remux" : `Transcode${levelP() ? ` ${levelP()}p` : ""}`}
         </span>
       </div>
     </div>

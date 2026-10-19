@@ -2,7 +2,7 @@ import { A, useParams } from "@solidjs/router";
 import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import {
   activeServer, api, ApiError, appVersion, fmtClock, img, isTauri, refreshUser, serverVersion, upload, user,
-  type Info, type Lib, type LibRow, type ScanStatus, type UserRow,
+  type Info, type Lib, type LibRow, type ScanStatus, type UpscaleOverview, type UserRow,
 } from "../api";
 import FolderPicker from "../components/FolderPicker";
 import { applyUpdate, checkUpdate, updateAvailable, updateProgress } from "../update";
@@ -483,12 +483,94 @@ function Playback() {
   );
 }
 
+// ---------- AI upscale (experimental) ----------
+
+function Upscale() {
+  const [ov, { refetch }] = createResource(() => api<UpscaleOverview>("/admin/upscale"));
+  const [libs] = createResource(() => api<Lib[]>("/libraries"));
+  const [model, setModel] = createSignal("");
+  const [lib, setLib] = createSignal("");
+  const act = useAction();
+  const timer = setInterval(() => refetch(), 4000);
+  onCleanup(() => clearInterval(timer));
+  const models = () => [...new Map((ov()?.workers ?? []).flatMap((w) => w.models).map((m) => [m.name, m])).values()];
+  const queue = (e: Event) => {
+    e.preventDefault();
+    act.run(async () => {
+      const n = await api<number>("/admin/upscale/jobs", { method: "POST", body: JSON.stringify({ model: model() || models()[0]?.name, library_id: Number(lib()) }) });
+      refetch();
+      return n;
+    }, "Queued");
+  };
+  return (
+    <>
+      <section class="panel">
+        <h2>AI upscale <span class="tag">experimental</span></h2>
+        <p class="muted">
+          GPU workers (the <code>upscaler/</code> folder, e.g. on the RTX 3060 PC) take jobs from here and upload an upscaled
+          copy, which shows up as an extra quality in the player. Start one with this server's URL and token:
+        </p>
+        <pre class="snippet">{`KELLYFIN_URL=${location.origin} KELLYFIN_UPSCALER_TOKEN=${ov()?.token ?? "…"} docker compose up -d`}</pre>
+        <div class="row-btns">
+          <button class="btn small" onClick={() => { if (confirm("New token? Running workers stop until restarted with it.")) act.run(async () => { await api("/admin/upscale/token", { method: "POST" }); refetch(); }); }}>New token</button>
+        </div>
+        <h3 class="sub-title">Workers online</h3>
+        <For each={ov()?.workers} fallback={<p class="muted">No worker has checked in during the last 2 minutes.</p>}>
+          {(w) => <p><b>{w.name}</b> <span class="muted">· {w.models.map((m) => m.name).join(", ")} · {w.seen_secs_ago}s ago</span></p>}
+        </For>
+      </section>
+      <form class="panel form" onSubmit={queue}>
+        <h2>Upscale a library</h2>
+        <label>Model
+          <select value={model()} onChange={(e) => setModel(e.currentTarget.value)}>
+            <For each={models()} fallback={<option value="">(start a worker first)</option>}>{(m) => <option value={m.name}>{m.name} — {m.description}</option>}</For>
+          </select>
+        </label>
+        <label>Library
+          <select value={lib()} onChange={(e) => setLib(e.currentTarget.value)}>
+            <option value="">Choose…</option>
+            <For each={libs()}>{(l) => <option value={l.id}>{l.name} ({l.count})</option>}</For>
+          </select>
+        </label>
+        <button class="btn primary" disabled={!lib() || !models().length}>Queue</button>
+        <p class="muted small">Single episodes: the “AI upscale” button on a video's page.</p>
+        <act.Note />
+      </form>
+      <section class="panel">
+        <h2>Jobs</h2>
+        <For each={ov()?.jobs} fallback={<p class="muted">No jobs yet.</p>}>
+          {(j) => (
+            <div class="suspect">
+              <div>
+                <A href={`/item/${j.item_id}`}>{j.title}</A>
+                <div class="muted small">
+                  {j.library} · {j.model} · {j.status}
+                  {j.status === "running" ? ` ${Math.round(j.progress * 100)}% on ${j.worker}` : ""}
+                  {j.status === "done" && j.height ? ` · ${j.height}p` : ""}
+                  {j.error ? ` · ${j.error.slice(0, 120)}` : ""}
+                </div>
+              </div>
+              <div class="row-btns">
+                <Show when={j.status === "failed"}>
+                  <button class="btn small" onClick={() => act.run(async () => { await api("/admin/upscale/jobs", { method: "POST", body: JSON.stringify({ model: j.model, item_ids: [j.item_id] }) }); refetch(); })}>Retry</button>
+                </Show>
+                <button class="btn small danger" onClick={() => act.run(async () => { await api(`/admin/upscale/jobs/${j.id}`, { method: "DELETE" }); refetch(); })}>Delete</button>
+              </div>
+            </div>
+          )}
+        </For>
+      </section>
+    </>
+  );
+}
+
 const TABS = [
   { id: "profile", label: "Profile", admin: false, view: Profile },
   { id: "dashboard", label: "Dashboard", admin: true, view: Dashboard },
   { id: "users", label: "Users", admin: true, view: Users },
   { id: "libraries", label: "Libraries", admin: true, view: Libraries },
   { id: "playback", label: "Playback", admin: true, view: Playback },
+  { id: "upscale", label: "AI upscale", admin: true, view: Upscale },
 ];
 
 export default function Settings() {
