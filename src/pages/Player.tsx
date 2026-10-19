@@ -11,6 +11,8 @@ import {
 type HlsT = import("hls.js").default;
 
 const HIDE_MS = 3000;
+const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+const speedLabel = (r: number) => (r === 1 ? "Normal" : `${r}×`);
 const REPORT_MS = 10000;
 
 export default function Player() {
@@ -40,7 +42,21 @@ function PlayerView(props: { id: string }) {
   const [sub2, setSub2] = createSignal("off");
   const [cues2, setCues2] = createSignal<Cue[]>([]);
   const [cue2, setCue2] = createSignal("");
-  const [menu, setMenu] = createSignal<"subs" | "subs2" | "audio" | "quality" | null>(null);
+  const [menu, setMenu] = createSignal<"subs" | "subs2" | "audio" | "quality" | "speed" | null>(null);
+  const [rate, setRateSignal] = createSignal(Number(localStorage.getItem("rate")) || 1);
+  // defaultPlaybackRate survives the src swaps of remux restarts and quality changes.
+  function setRate(r: number) {
+    setRateSignal(r);
+    video.defaultPlaybackRate = r;
+    video.playbackRate = r;
+    try {
+      localStorage.setItem("rate", String(r));
+    } catch {}
+  }
+  const stepRate = (dir: number) => {
+    const i = SPEEDS.indexOf(rate());
+    setRate(SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, (i < 0 ? SPEEDS.indexOf(1) : i) + dir))]);
+  };
   const [volume, setVolume] = createSignal(1);
   const [muted, setMuted] = createSignal(false);
   const [fav, setFav] = createSignal(false);
@@ -329,7 +345,7 @@ function PlayerView(props: { id: string }) {
 
   // Touch: vertical swipe on the left half sets brightness, on the right half volume.
   const [bright, setBright] = createSignal(Number(localStorage.getItem("brightness")) || 1);
-  const [hud, setHud] = createSignal<{ kind: "sun" | "volume"; v: number; note?: string } | null>(null);
+  const [hud, setHud] = createSignal<{ kind: "sun" | "volume" | "speed"; v: number; note?: string } | null>(null);
   let hudTimer: number | undefined;
   let drag: { x: number; y: number; kind: "sun" | "volume"; start: number; active: boolean } | null = null;
   function onDown(e: PointerEvent) {
@@ -396,6 +412,12 @@ function PlayerView(props: { id: string }) {
     else if (k === "ArrowRight" || k === "l") seek(now() + 10);
     else if (k === "f") fullscreen();
     else if (k === "m") video.muted = !video.muted;
+    else if (k === "<" || k === ">") {
+      stepRate(k === ">" ? 1 : -1);
+      setHud({ kind: "speed", v: (SPEEDS.indexOf(rate()) + 1) / SPEEDS.length, note: speedLabel(rate()) });
+      clearTimeout(hudTimer);
+      hudTimer = window.setTimeout(() => setHud(null), 900);
+    }
     else if (k === "Escape" && !document.fullscreenElement) history.back();
     else return;
     e.preventDefault();
@@ -483,6 +505,7 @@ function PlayerView(props: { id: string }) {
         onCanPlay={() => setWaiting(false)}
         onSeeked={() => report()}
         onVolumeChange={() => { setVolume(video.volume); setMuted(video.muted); }}
+        onLoadedData={() => (video.playbackRate = rate())}
         onLoadedMetadata={() => {
           if (pendingSkip > 0.3) video.currentTime = pendingSkip;
           pendingSkip = 0;
@@ -546,6 +569,13 @@ function PlayerView(props: { id: string }) {
                   items: audioStreams(it).map((s) => ({ value: String(s.index), label: streamLabel(s) })),
                   onPick: pick((v) => changeAudio(Number(v))),
                 };
+              case "speed":
+                return {
+                  title: "Playback speed",
+                  current: String(rate()),
+                  items: SPEEDS.map((r) => ({ value: String(r), label: speedLabel(r) })),
+                  onPick: pick((v) => setRate(Number(v))),
+                };
               default:
                 return {
                   title: "Quality",
@@ -564,11 +594,19 @@ function PlayerView(props: { id: string }) {
               <div class="menu-shade" onPointerUp={(e) => { e.stopPropagation(); setMenu(null); }} />
               <div class="p-menu" onPointerUp={(e) => e.stopPropagation()}>
                 <div class="p-menu-title">
-                  <Show when={m() === "subs2"}>
-                    <button class="icon small" onClick={() => setMenu("subs")} aria-label="Back"><Icon name="left" size={18} /></button>
+                  <Show when={m() === "subs2" || m() === "speed"}>
+                    <button class="icon small" onClick={() => setMenu(m() === "speed" ? "quality" : "subs")} aria-label="Back"><Icon name="left" size={18} /></button>
                   </Show>
                   {opts().title}
                 </div>
+                <Show when={m() === "quality"}>
+                  <button class="p-menu-item" onClick={() => setMenu("speed")}>
+                    <span class="check" />
+                    <span class="grow">Playback speed</span>
+                    <span class="muted">{speedLabel(rate())}</span>
+                    <Icon name="right" size={18} />
+                  </button>
+                </Show>
                 <Show when={m() === "subs" && it.subtitles.length > 1}>
                   <button class="p-menu-item" onClick={() => setMenu("subs2")}>
                     <span class="check" />

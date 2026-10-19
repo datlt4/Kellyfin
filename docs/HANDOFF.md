@@ -1,6 +1,6 @@
 # Kellyfin — handoff
 
-State on 2026-10-19, version **0.7.1** (branch `dev`; `main` holds only the initial commit).
+State on 2026-10-20, version **0.8.0** (branch `dev`; `main` holds only the initial commit).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
 (most choices came from measurements on the real library), how to build and ship without GitHub Actions,
@@ -182,6 +182,8 @@ Player controls are icons with popup menus (Jellyfin-style UX): favorite, CC (su
 subtitles" sub-menu), audio track, volume (slider on fine pointers only), quality (gear), next, cast, AirPlay, PiP,
 fullscreen. **Dual subtitles** for language learning: a second track is drawn above the first, smaller and
 yellow; its language is remembered (`sub2Lang`) and never equals the primary track.
+**Playback speed** 0.25–2× sits under the gear menu ("Playback speed ›"), keys `<`/`>` step it; it is remembered
+(`rate`) and set as `defaultPlaybackRate` so remux restarts and quality switches keep it.
 
 Mobile gestures: vertical swipe left half = brightness (CSS filter 0.2–1.5, remembered), right half = volume
 (iOS ignores scripted volume; the HUD says so). Double tap a side = ±10 s.
@@ -331,6 +333,7 @@ the A8 Star is the Samsung G885F). A free Apple ID allows only 3 sideloaded apps
 | `00b81e1`, `23d76ae` | | this handoff, `publish-release.sh`, Windows local build on Ubuntu 24.04 | Ubuntu 22.04's NSIS 3.08 lacks `Win\RestartManager.nsh`. CI then went green for build + mobile (first APK/IPA). |
 | `bd4c505` | 0.7.0 | icon controls with menus, dual subtitles, search icon redrawn | Hand-written SVG paths can render wrong: render every icon to a contact sheet to check. |
 | `c8fe770` | 0.7.1 | repair wrong titles/posters from Jellyfin | Dry-run on real data first: the first rule would have replaced 501 correct posters. |
+| (this) | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
 
 ## 8. P7 — AI upscale (planned, nothing built)
 
