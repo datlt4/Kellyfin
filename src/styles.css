@@ -504,7 +504,7 @@ a.icon { display: grid; place-items: center; width: 40px; height: 40px; border-r
 /* Settings */
 .settings { display: grid; grid-template-columns: 180px minmax(0, 860px); gap: 24px; padding: 24px var(--gutter); }
 .tabs { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 80px; align-self: start; }
-.tabs a { padding: 9px 14px; border-radius: 8px; color: var(--muted); }
+.tabs a { padding: 9px 14px; border-radius: 8px; color: var(--muted); white-space: nowrap; }
 .tabs a.active, .tabs a:hover { background: var(--surface-2); color: var(--text); }
 .tab-body { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
@@ -541,8 +541,9 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
 .tag.warn { color: #fbbf24; }
 .lib-list { display: flex; flex-direction: column; }
 .lib-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
-.lib-thumb { aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden; background: var(--surface-2); }
-.lib-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lib-thumb { position: relative; aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden; background: var(--surface-2); }
+/* Absolute: a % height inside an aspect-ratio grid item makes Safari 17 size the row ~17000px. */
+.lib-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .lib-info { min-width: 0; }
 @media (max-width: 900px) { .lib-row { grid-template-columns: 96px minmax(0, 1fr); } .lib-row > .row-btns { grid-column: 1 / -1; justify-content: flex-start; } }
 .paths { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
