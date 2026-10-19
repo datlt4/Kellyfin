@@ -1,0 +1,114 @@
+name: release
+
+# Merging into main publishes package.json's version, once: branch release/vX.Y.Z, tag vX.Y.Z,
+# desktop installers for every common OS/CPU, Android APK and unsigned iOS IPA.
+# Bump the version (scripts/set-version.sh) before merging, or nothing is released.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      id: ${{ steps.rel.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v$(node -p "require('./package.json').version")"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::notice::$TAG already released; bump the version to publish a new one"
+          else
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+      - id: rel
+        if: steps.v.outputs.tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = "${{ steps.v.outputs.tag }}";
+            const { owner, repo } = context.repo;
+            await github.rest.git.createRef({ owner, repo, ref: `refs/heads/release/${tag}`, sha: context.sha });
+            const { data } = await github.rest.repos.createRelease({
+              owner, repo, tag_name: tag, target_commitish: context.sha,
+              name: `Kellyfin ${tag}`, draft: true, generate_release_notes: true,
+            });
+            core.setOutput("id", data.id);
+
+  desktop:
+    needs: prepare
+    if: needs.prepare.outputs.tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux_x64, os: ubuntu-22.04 }
+          - { name: linux_arm64, os: ubuntu-22.04-arm }
+          - { name: windows_x64, os: windows-latest }
+          - { name: windows_ia32, os: windows-latest, target: i686-pc-windows-msvc }
+          - { name: windows_arm64, os: windows-latest, target: aarch64-pc-windows-msvc, args: "--bundles nsis" }
+          - { name: macos_arm64, os: macos-latest, target: aarch64-apple-darwin }
+          - { name: macos_x64, os: macos-latest, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri, key: "${{ matrix.name }}" }
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.prepare.outputs.id }}
+          args: ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${{ matrix.args }}
+      - name: Windows portable zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $exe = Get-ChildItem -Recurse src-tauri/target -Filter kellyfin.exe | Where-Object { $_.FullName -match 'release' -and $_.FullName -notmatch 'deps' } | Select-Object -First 1
+          Compress-Archive -Path $exe.FullName -DestinationPath kellyfin_${{ matrix.name }}_portable.zip
+          gh release upload "${{ needs.prepare.outputs.tag }}" kellyfin_${{ matrix.name }}_portable.zip --clobber
+
+  mobile:
+    needs: prepare
+    if: needs.prepare.outputs.tag
+    uses: ./.github/workflows/mobile.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit
+
+  publish:
+    needs: [prepare, desktop, mobile]
+    if: ${{ !cancelled() && needs.prepare.outputs.tag }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              release_id: ${{ needs.prepare.outputs.id }}, draft: false, make_latest: "true",
+            });

@@ -77,17 +77,55 @@ function save(key: string, v: string | null) {
   } catch {}
 }
 
-// Web build is served by the server itself; native apps must be told where it is.
-const [server, setServerSignal] = createSignal(load("server") ?? (isTauri ? "" : location.origin));
-export { server };
-export function setServer(url: string) {
-  const u = url.trim().replace(/\/+$/, "");
-  save("server", u);
-  setServerSignal(u);
+/** A saved server in the native apps: plain http(s), or behind a proxy that wants extra headers (Pangolin). */
+export type ServerProfile = { id: string; name: string; url: string; headers: [string, string][] };
+
+export function savedServers(): ServerProfile[] {
+  try {
+    return JSON.parse(load("servers") ?? "[]");
+  } catch {
+    return [];
+  }
+}
+export function saveServers(list: ServerProfile[]) {
+  save("servers", JSON.stringify(list));
 }
 
-let token = load("token");
+// Web build is served by the server itself; native apps pick a saved server.
+const [server, setServerSignal] = createSignal(isTauri ? "" : location.origin);
+const [activeServer, setActiveServer] = createSignal<ServerProfile | null>(null);
+export { server, activeServer };
+
+// Sessions are per server in the apps.
+const tokenKey = () => (isTauri ? `token:${activeServer()?.id ?? ""}` : "token");
+let token = isTauri ? null : load("token");
 export const authToken = () => token;
+
+/** Base URL the UI talks to: the server itself, or the app's local proxy when headers must be added. */
+async function baseFor(p: ServerProfile): Promise<string> {
+  const url = p.url.trim().replace(/\/+$/, "");
+  const headers = p.headers.filter(([k]) => k.trim());
+  if (!headers.length) return url;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("set_server", { url, headers });
+}
+
+export async function useServer(p: ServerProfile) {
+  setServerSignal(await baseFor(p));
+  setActiveServer(p);
+  save("activeServer", p.id);
+  token = load(tokenKey());
+}
+
+/** Checks that a server answers as Kellyfin (headers included); returns its version. */
+export async function probeServer(p: ServerProfile): Promise<string> {
+  const r = await fetch(`${await baseFor(p)}/api/health`).catch((e) => {
+    throw new Error(`Cannot reach server: ${e.message}`);
+  });
+  const body = await r.json().catch(() => null);
+  if (!r.ok || body?.app !== "kellyfin") throw new Error(r.ok ? "Not a Kellyfin server (check URL and headers)" : `HTTP ${r.status}`);
+  return body.version;
+}
 const [user, setUser] = createSignal<User | null>(null);
 export { user };
 
@@ -112,7 +150,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 function dropSession() {
   token = null;
-  save("token", null);
+  save(tokenKey(), null);
   setUser(null);
 }
 
@@ -137,9 +175,14 @@ export async function login(username: string, password: string) {
     body: JSON.stringify({ username, password }),
   });
   token = r.token;
-  save("token", r.token);
+  save(tokenKey(), r.token);
   setUser(r.user);
   await refreshUser().catch(() => {});
+}
+
+/** Back to the server picker; this server's session is kept for when it is picked again. */
+export function switchServer() {
+  setUser(null);
 }
 
 export async function logout() {
@@ -149,6 +192,12 @@ export async function logout() {
 
 /** Resolves the stored session; false when a login is needed. */
 export async function restore(): Promise<boolean> {
+  if (isTauri) {
+    const list = savedServers();
+    const p = list.find((s) => s.id === load("activeServer")) ?? list[0];
+    if (!p) return false;
+    await useServer(p).catch(() => {});
+  }
   if (!token || !server()) return false;
   try {
     setUser(await api<User>("/me"));

@@ -257,6 +257,52 @@ function PlayerView(props: { id: string }) {
   const pip = () =>
     document.pictureInPictureElement ? document.exitPictureInPicture() : video.requestPictureInPicture().catch(() => {});
 
+  // Touch: vertical swipe on the left half sets brightness, on the right half volume.
+  const [bright, setBright] = createSignal(Number(localStorage.getItem("brightness")) || 1);
+  const [hud, setHud] = createSignal<{ kind: "sun" | "volume"; v: number; note?: string } | null>(null);
+  let hudTimer: number | undefined;
+  let drag: { x: number; y: number; kind: "sun" | "volume"; start: number; active: boolean } | null = null;
+  function onDown(e: PointerEvent) {
+    if (e.pointerType === "mouse") return;
+    const left = e.clientX < root.clientWidth / 2;
+    drag = { x: e.clientX, y: e.clientY, kind: left ? "sun" : "volume", start: left ? bright() : video.volume, active: false };
+  }
+  function onMove(e: PointerEvent) {
+    if (!drag) return;
+    const dy = drag.y - e.clientY;
+    if (!drag.active) {
+      if (Math.abs(dy) < 14 || Math.abs(dy) < Math.abs(e.clientX - drag.x)) return;
+      drag.active = true;
+    }
+    // A swipe over 60% of the screen height covers the whole range.
+    const span = root.clientHeight * 0.6;
+    let note: string | undefined;
+    let shown: number;
+    if (drag.kind === "sun") {
+      const v = Math.min(1.5, Math.max(0.2, drag.start + (dy / span) * 1.3));
+      setBright(v);
+      shown = (v - 0.2) / 1.3;
+    } else {
+      const v = Math.min(1, Math.max(0, drag.start + dy / span));
+      video.volume = v;
+      video.muted = v === 0;
+      shown = v;
+      // iOS keeps media volume read-only: only the hardware buttons change it.
+      if (Math.abs(video.volume - v) > 0.01) note = "Use the volume buttons";
+    }
+    setHud({ kind: drag.kind, v: shown, note });
+    clearTimeout(hudTimer);
+    hudTimer = window.setTimeout(() => setHud(null), 900);
+  }
+  function onUp(e: PointerEvent) {
+    const swiped = drag?.active;
+    drag = null;
+    if (!swiped) return onTap(e);
+    try {
+      localStorage.setItem("brightness", String(bright()));
+    } catch {}
+  }
+
   // Touch: single tap shows/hides controls, double tap on a side skips 10s. Mouse: click toggles play.
   let lastTap = 0;
   function onTap(e: PointerEvent) {
@@ -316,6 +362,7 @@ function PlayerView(props: { id: string }) {
       cancelAnimationFrame(raf);
       clearInterval(timer);
       clearTimeout(hideTimer);
+      clearTimeout(hudTimer);
       clearInterval(nextTimer);
       hls?.destroy();
       video.removeAttribute("src");
@@ -376,8 +423,22 @@ function PlayerView(props: { id: string }) {
           else return fail("Playback failed.");
           load(at);
         }}
-        onPointerUp={onTap}
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerCancel={() => (drag = null)}
+        style={{ filter: bright() !== 1 ? `brightness(${bright()})` : undefined }}
       />
+
+      <Show when={hud()}>
+        {(h) => (
+          <div class="hud">
+            <Icon name={h().kind} size={26} />
+            <div class="hud-bar"><div style={{ width: `${Math.round(h().v * 100)}%` }} /></div>
+            <Show when={h().note}><small>{h().note}</small></Show>
+          </div>
+        )}
+      </Show>
 
       <Show when={cue()}>
         <div class="subs"><span>{cue()}</span></div>

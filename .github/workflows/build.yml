@@ -34,7 +34,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri }
-      - run: mkdir -p dist && cargo check
+      - run: mkdir -p dist && cargo test
         working-directory: src-tauri
 
   # Each architecture builds natively (arm64 under QEMU took ~30 min), then one manifest joins them.

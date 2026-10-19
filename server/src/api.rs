@@ -23,6 +23,7 @@ const IMMUTABLE: HeaderValue = HeaderValue::from_static("public, max-age=3153600
 
 pub fn router(st: AppState) -> Router {
     let api = Router::new()
+        .route("/health", get(health))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         .route("/me", get(admin::me))
@@ -86,6 +87,11 @@ pub fn router(st: AppState) -> Router {
             );
     }
     app.with_state(st)
+}
+
+/// Unauthenticated identity check used by the apps' "Test" button.
+async fn health() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "app": "kellyfin", "version": env!("CARGO_PKG_VERSION") }))
 }
 
 /// Poster/thumbnail card shared by every list.
