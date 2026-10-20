@@ -22,8 +22,11 @@ export function pullToRefresh(el: HTMLElement) {
     if (y0 < 0) return;
     const t = e.touches[0];
     dy = t.clientY - y0;
+    const dx = Math.abs(t.clientX - x0);
+    // Decide only after 10px, so first-touch jitter does not cancel a pull.
+    if (Math.max(dx, Math.abs(dy)) < 10) return;
     // Scrolling down the page or swiping a shelf sideways.
-    if (Math.abs(t.clientX - x0) > dy) y0 = -1, dy = 0;
+    if (dx > dy) y0 = -1, dy = 0;
     show(Math.max(0, dy));
   };
   const end = () => {
