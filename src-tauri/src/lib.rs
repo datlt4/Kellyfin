@@ -23,52 +23,6 @@ async fn set_server(state: State<'_, ProxyState>, url: String, headers: Vec<(Str
     Ok(live.0.clone())
 }
 
-/// Screen brightness 0..1 for the player's swipe (iOS; Android uses its JavaScript bridge).
-#[tauri::command]
-async fn get_brightness(app: tauri::AppHandle) -> f64 {
-    #[cfg(target_os = "ios")]
-    {
-        // UIKit belongs to the main thread; async commands run elsewhere, so hop over and wait.
-        let (tx, rx) = std::sync::mpsc::channel();
-        let _ = app.run_on_main_thread(move || {
-            let _ = tx.send(ios::brightness());
-        });
-        return rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap_or(1.0);
-    }
-    #[cfg(not(target_os = "ios"))]
-    {
-        let _ = app;
-        1.0
-    }
-}
-
-#[tauri::command]
-async fn set_brightness(app: tauri::AppHandle, value: f64) {
-    #[cfg(target_os = "ios")]
-    let _ = app.run_on_main_thread(move || ios::set_brightness(value.clamp(0.0, 1.0)));
-    #[cfg(not(target_os = "ios"))]
-    let _ = (app, value);
-}
-
-#[cfg(target_os = "ios")]
-mod ios {
-    use objc2::{class, msg_send, runtime::AnyObject};
-
-    pub fn brightness() -> f64 {
-        unsafe {
-            let screen: *mut AnyObject = msg_send![class!(UIScreen), mainScreen];
-            msg_send![screen, brightness]
-        }
-    }
-
-    pub fn set_brightness(v: f64) {
-        unsafe {
-            let screen: *mut AnyObject = msg_send![class!(UIScreen), mainScreen];
-            let _: () = msg_send![screen, setBrightness: v];
-        }
-    }
-}
-
 /// Newest release if it is newer than this app (None when up to date).
 #[tauri::command]
 async fn update_check(app: tauri::AppHandle) -> Result<Option<update::UpdateInfo>, String> {
@@ -110,7 +64,7 @@ pub fn run() {
             app.manage(ProxyState { proxy, live: tokio::sync::Mutex::new(live) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![set_server, get_brightness, set_brightness, update_check, update_install, open_release])
+        .invoke_handler(tauri::generate_handler![set_server, update_check, update_install, open_release])
         .run(tauri::generate_context!())
         .expect("error while running Kellyfin");
 }

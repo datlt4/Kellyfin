@@ -1,6 +1,6 @@
 [package]
 name = "kellyfin"
-version = "2.0.3"
+version = "2.0.4"
 edition = "2021"
 license = "MIT"
 
@@ -24,10 +24,6 @@ tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync"]
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Signed in-app updates on desktop (phones update from the release page / re-sign job).
 tauri-plugin-updater = "2"
-
-[target.'cfg(target_os = "ios")'.dependencies]
-# UIScreen brightness for the player's swipe gesture.
-objc2 = "0.6"
 
 [profile.release]
 lto = true

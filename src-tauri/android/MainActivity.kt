@@ -1,15 +1,11 @@
 package com.koi.kellyfin
 
-import android.content.Context
 import android.content.pm.ActivityInfo
 import android.graphics.Color
-import android.media.AudioManager
 import android.os.Bundle
 import android.os.SystemClock
-import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.widget.Toast
@@ -19,7 +15,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import kotlin.math.roundToInt
 
 class MainActivity : TauriActivity() {
   private var lastBack = 0L
@@ -56,7 +51,7 @@ class MainActivity : TauriActivity() {
     })
   }
 
-  // Device controls for the player (src/native.ts): screen brightness, media volume, fullscreen.
+  // Device controls for the player (src/native.ts): fullscreen.
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     webView.addJavascriptInterface(NativeBridge(this), "KellyfinNative")
@@ -71,42 +66,6 @@ class MainActivity : TauriActivity() {
 
 /** Called from JavaScript on a binder thread: window changes hop to the UI thread. */
 class NativeBridge(private val activity: MainActivity) {
-  private val audio = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-
-  /** 0..1; the system level when the app has not overridden it. */
-  @JavascriptInterface
-  fun getBrightness(): Float {
-    val own = activity.window.attributes.screenBrightness
-    if (own >= 0) return own
-    return try {
-      Settings.System.getInt(activity.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
-    } catch (e: Exception) {
-      0.5f
-    }
-  }
-
-  /** Brightness for this app's window only (no permission needed); < 0 returns to the system setting. */
-  @JavascriptInterface
-  fun setBrightness(v: Float) {
-    activity.runOnUiThread {
-      val attrs = activity.window.attributes
-      attrs.screenBrightness = if (v < 0) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE else v.coerceIn(0.01f, 1f)
-      activity.window.attributes = attrs
-    }
-  }
-
-  @JavascriptInterface
-  fun getVolume(): Float {
-    val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-    return if (max > 0) audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max else 0f
-  }
-
-  @JavascriptInterface
-  fun setVolume(v: Float) {
-    val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-    audio.setStreamVolume(AudioManager.STREAM_MUSIC, (v * max).roundToInt().coerceIn(0, max), 0)
-  }
-
   /** Hides the system bars and turns landscape regardless of auto-rotate; off restores both. */
   @JavascriptInterface
   fun setFullscreen(on: Boolean) {

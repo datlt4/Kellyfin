@@ -1,6 +1,6 @@
 # Kellyfin — handoff
 
-State on 2026-10-20, version **2.0.3** (2.0.0: in-app updates, AI upscaling, Jellyfin retired; 2.0.1: iOS settings fixes; 2.0.2: iOS proxy restart after suspension, pull to refresh; 2.0.3: pull gesture no longer cancelled by first-touch jitter). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
+State on 2026-10-20, version **2.0.4** (2.0.0: in-app updates, AI upscaling, Jellyfin retired; 2.0.1: iOS settings fixes; 2.0.2: iOS proxy restart after suspension, pull to refresh; 2.0.3: pull gesture no longer cancelled by first-touch jitter; 2.0.4: player swipes removed, no page zoom, "10" in skip icons). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
 `release.yml` (branch `release/v1.0.0`, tag `v1.0.0`, GitHub release with desktop and mobile builds).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
@@ -95,7 +95,7 @@ src/                    SolidJS client
   api.ts                API client, server profiles, auth, formatting helpers
   playback.ts           playability decisions, quality ladder, bandwidth test, VTT parser
   cast.ts               Chromecast sender + AirPlay
-  native.ts             device brightness / volume / fullscreen (Android bridge, iOS Tauri commands)
+  native.ts             Android fullscreen + landscape (JavaScript bridge)
   update.ts             app update check / install (not on the web)
   pages/                Home, Library, Item, Player, Settings (5 tabs), Search, Login
   components/           TopBar, Row (shelf), Card, Icon (SVG), FolderPicker
@@ -199,15 +199,13 @@ Touch layout: play/pause and ±10 s sit in the middle of the video (shown with t
 the top row, and the bottom row (clock, favorite, CC, audio, volume, quality, next, fullscreen) fits one line on a
 375 px phone. Mouse users keep the bottom play buttons and no centre overlay (`pointer: coarse` decides).
 
-Mobile gestures (`src/native.ts`): vertical swipe on the left half sets brightness, on the right half volume;
-double tap a side = ±10 s.
-- Android app: `window.KellyfinNative` (`MainActivity.kt`, `NativeBridge`, injected in `onWebViewCreate`) sets the
-  window's screen brightness (reset to the system level when the player closes), the phone's media volume, and
+Mobile gestures: double tap a side = ±10 s (the skip icons carry a "10"). The brightness/volume swipes (1.5.0) were
+removed in 2.0.4 at the owner's request: on iOS a double tap zoomed the page and the swipes then took every
+gesture, so it could not be zoomed back. Page zoom is now off (`maximum-scale=1, user-scalable=no`,
+`touch-action: manipulation` on the player).
+- Android app: `window.KellyfinNative` (`MainActivity.kt`, `NativeBridge`, injected in `onWebViewCreate`) only does
   fullscreen = hidden system bars + `SENSOR_LANDSCAPE` even with auto-rotate off (back to `UNSPECIFIED` after).
-- iOS app: Tauri commands `get_brightness` / `set_brightness` (`objc2`, `UIScreen.brightness`, on the main
-  thread); the starting level is restored on leaving. iOS forbids setting the system volume, so the right-half
-  swipe is disabled on any iOS device. Forcing landscape with rotation lock on is not implemented on iOS.
-- Web: brightness is a CSS filter on the video (0.2–1.5, remembered) and volume the video's own.
+  Forcing landscape with rotation lock on is not implemented on iOS.
 
 ### 4.5 Transcoding (`server/src/transcode.rs`)
 
@@ -423,6 +421,7 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
 | `80e2f07` | 2.0.0 | in-app updates (signed desktop updater, APK link, iOS notice), AI upscale pipeline + worker, back button on the server picker, Jellyfin retired | Drive the updater from Rust commands (no extra webview permissions); the upscale worker pulls work so the GPU PC needs no inbound access. Released: 34 assets incl. 13 `.sig` and `latest.json` covering all 20 desktop platform keys; A8 Star updated 1.5.0 → 2.0.0. |
 | `b408b45` | 2.0.1 | iOS: Settings → Libraries rows blank, "AI upscale" tab wrapped | Safari 17 sized a grid row ~17000px because an `img` with `height: 100%` sat in an `aspect-ratio` grid item (content drawn far below, the visible row empty); the image is now absolutely positioned. Tabs `nowrap`. Android did not show either. Released (34 assets, CI green). |
+| (next) | 2.0.4 | remove brightness/volume swipes (and their Android/iOS native code), disable page zoom, "10" inside the skip icons | A double tap zoomed the iOS page and the swipe handlers then ate the pinch back. |
 | `95dfe2c` | 2.0.3 | pull to refresh: decide vertical vs sideways only after 10px | The first `touchmove` often moves 1–2px sideways, which cancelled the pull. 2.0.2's release run could not be cancelled with the PAT (no Actions scope). Released (34 assets). |
 | `ce2ea71` | 2.0.2 | iOS: blank Home / "?" thumbnails after the app was in the background; pull to refresh; Home error + Retry | iOS reclaims a suspended app's listening sockets: check the local proxy on resume and rebind. `alive_until_stopped` test covers the check. |
 | `2cdef6b` | 1.5.0 | device brightness/volume/landscape fullscreen in the apps, centre player controls, top-bar safe-area fix, one view button | A fixed-height bar with safe-area padding squeezes its content; CSS rules declared earlier lose to later ones of equal specificity (twice). |

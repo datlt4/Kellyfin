@@ -42,8 +42,7 @@ Kellyfin was written to fix what hurt in daily Jellyfin use on a small home serv
   language learning (a second language above the first).
 - Audio track switching, playback speed 0.25×–2×, resume where you left off, auto-play of the next episode
   (and of the next season).
-- Picture-in-picture, fullscreen, keyboard shortcuts, swipe gestures on phones (left half: brightness,
-  right half: volume, double tap: ±10 s).
+- Picture-in-picture, fullscreen, keyboard shortcuts, double tap a side on phones to skip ±10 s.
 - Cast to **Chromecast** (Chrome) and **AirPlay** (Safari / iOS).
 
 **Library**

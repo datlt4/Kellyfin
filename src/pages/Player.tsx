@@ -1,12 +1,7 @@
 import { useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import Icon from "../components/Icon";
-import {
-  getBrightness, getVolume, nativeBrightness, nativeFullscreen, nativeVolume, setBrightness, setFullscreen, setVolume,
-} from "../native";
-
-// iOS keeps media volume read-only (hardware buttons only), so the volume swipe is off there.
-const iosDevice = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+import { nativeFullscreen, setFullscreen } from "../native";
 import { airplay, castAvailable, castDevice, castLoad, castSeek, castToggle, initCast, remotePaused, remoteTime, requestCast, stopCast } from "../cast";
 import { api, authToken, fmtClock, img, mediaUrl, server, streamLabel, subLabel, type ItemDetail } from "../api";
 import {
@@ -363,66 +358,8 @@ function PlayerView(props: { id: string }) {
   const pip = () =>
     document.pictureInPictureElement ? document.exitPictureInPicture() : video.requestPictureInPicture().catch(() => {});
 
-  // Touch: vertical swipe on the left half sets brightness, on the right half volume. In the apps these drive
-  // the device's screen brightness and media volume; on the web, a filter on the video and the video's volume.
-  const [bright, setBright] = createSignal(nativeBrightness ? 1 : Number(localStorage.getItem("brightness")) || 1);
-  let deviceBright = 0.5;
-  let startBright: number | null = null; // iOS keeps whatever we set system-wide: restore it on leaving
-  if (nativeBrightness) getBrightness().then((v) => { deviceBright = v; startBright = v; });
-  const [hud, setHud] = createSignal<{ kind: "sun" | "volume" | "speed"; v: number; note?: string } | null>(null);
+  const [hud, setHud] = createSignal<{ kind: "speed"; v: number; note?: string } | null>(null);
   let hudTimer: number | undefined;
-  let drag: { x: number; y: number; kind: "sun" | "volume"; start: number; active: boolean } | null = null;
-  function onDown(e: PointerEvent) {
-    if (e.pointerType === "mouse") return;
-    const left = e.clientX < root.clientWidth / 2;
-    if (!left && iosDevice) {
-      drag = null;
-      return;
-    }
-    const start = left ? (nativeBrightness ? deviceBright : bright()) : nativeVolume ? getVolume() : video.volume;
-    drag = { x: e.clientX, y: e.clientY, kind: left ? "sun" : "volume", start, active: false };
-  }
-  function onMove(e: PointerEvent) {
-    if (!drag) return;
-    const dy = drag.y - e.clientY;
-    if (!drag.active) {
-      if (Math.abs(dy) < 14 || Math.abs(dy) < Math.abs(e.clientX - drag.x)) return;
-      drag.active = true;
-    }
-    // A swipe over 60% of the screen height covers the whole range.
-    const span = root.clientHeight * 0.6;
-    let shown: number;
-    if (drag.kind === "sun" && nativeBrightness) {
-      const v = Math.min(1, Math.max(0.02, drag.start + dy / span));
-      setBrightness(v);
-      deviceBright = v;
-      shown = v;
-    } else if (drag.kind === "sun") {
-      const v = Math.min(1.5, Math.max(0.2, drag.start + (dy / span) * 1.3));
-      setBright(v);
-      shown = (v - 0.2) / 1.3;
-    } else {
-      const v = Math.min(1, Math.max(0, drag.start + dy / span));
-      if (nativeVolume) setVolume(v);
-      else {
-        video.volume = v;
-        video.muted = v === 0;
-      }
-      shown = v;
-    }
-    setHud({ kind: drag.kind, v: shown });
-    clearTimeout(hudTimer);
-    hudTimer = window.setTimeout(() => setHud(null), 900);
-  }
-  function onUp(e: PointerEvent) {
-    const swiped = drag?.active;
-    drag = null;
-    if (!swiped) return onTap(e);
-    if (nativeBrightness) return;
-    try {
-      localStorage.setItem("brightness", String(bright()));
-    } catch {}
-  }
 
   // Touch: single tap shows/hides controls, double tap on a side skips 10s. Mouse: click toggles play.
   let lastTap = 0;
@@ -496,8 +433,6 @@ function PlayerView(props: { id: string }) {
       clearTimeout(hudTimer);
       clearInterval(nextTimer);
       hls?.destroy();
-      // Leave the device as found: Android drops the app's brightness override, iOS gets its level back.
-      if (nativeBrightness) setBrightness(iosDevice ? startBright ?? -1 : -1);
       if (nativeFs()) setFullscreen(false);
       video.removeAttribute("src");
       video.load(); // stops the download / server-side remux
@@ -560,11 +495,7 @@ function PlayerView(props: { id: string }) {
           else return fail("Playback failed.");
           load(at);
         }}
-        onPointerDown={onDown}
-        onPointerMove={onMove}
-        onPointerUp={onUp}
-        onPointerCancel={() => (drag = null)}
-        style={{ filter: bright() !== 1 ? `brightness(${bright()})` : undefined }}
+        onPointerUp={onTap}
       />
 
       <Show when={hud()}>
