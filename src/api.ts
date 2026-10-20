@@ -146,6 +146,13 @@ export async function useServer(p: ServerProfile) {
   token = load(tokenKey());
 }
 
+// iOS kills the local proxy's listener while the app is suspended; set_server then serves on a new base.
+document.addEventListener("visibilitychange", async () => {
+  const p = activeServer();
+  if (document.hidden || !p || !server().startsWith("http://127.0.0.1")) return;
+  if ((await baseFor(p).catch(() => server())) !== server()) location.reload();
+});
+
 /** Checks that a server answers as Kellyfin (headers included); returns its version. */
 export async function probeServer(p: ServerProfile): Promise<string> {
   const r = await fetch(`${await baseFor(p)}/api/health`).catch((e) => {

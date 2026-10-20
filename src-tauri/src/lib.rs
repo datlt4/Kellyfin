@@ -6,14 +6,21 @@ use tauri::State;
 
 struct ProxyState {
     proxy: proxy::Proxy,
-    base: String,
+    /// Base URL and serving task; replaced when the listener has died.
+    live: tokio::sync::Mutex<(String, tauri::async_runtime::JoinHandle<()>)>,
 }
 
 /// Points the local proxy at a server; returns the base URL the web UI should use instead.
+/// A new base means the old listener had died (iOS, after a suspension).
 #[tauri::command]
-fn set_server(state: State<ProxyState>, url: String, headers: Vec<(String, String)>) -> String {
+async fn set_server(state: State<'_, ProxyState>, url: String, headers: Vec<(String, String)>) -> Result<String, String> {
     *state.proxy.target.write().unwrap() = Some(proxy::Target { url, headers });
-    state.base.clone()
+    let mut live = state.live.lock().await;
+    if !proxy::alive(&live.0).await {
+        live.1.abort();
+        *live = proxy::start(state.proxy.clone()).map_err(|e| e.to_string())?;
+    }
+    Ok(live.0.clone())
 }
 
 /// Screen brightness 0..1 for the player's swipe (iOS; Android uses its JavaScript bridge).
@@ -99,8 +106,8 @@ pub fn run() {
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             use tauri::Manager;
             let proxy = proxy::Proxy::new(secret());
-            let base = proxy::start(proxy.clone());
-            app.manage(ProxyState { proxy, base });
+            let live = proxy::start(proxy.clone())?;
+            app.manage(ProxyState { proxy, live: tokio::sync::Mutex::new(live) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![set_server, get_brightness, set_brightness, update_check, update_install, open_release])

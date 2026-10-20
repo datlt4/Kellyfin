@@ -5,6 +5,7 @@ import TopBar from "./components/TopBar";
 import UpdateBanner from "./components/UpdateBanner";
 import { autoCheck } from "./update";
 import Login from "./pages/Login";
+import { pullToRefresh } from "./pull";
 
 export default function App(props: ParentProps) {
   const [ready] = createResource(restore);
@@ -22,6 +23,7 @@ export default function App(props: ParentProps) {
         <Show when={!loc.pathname.startsWith("/play/")} fallback={props.children}>
           <TopBar />
           <UpdateBanner />
+          <div class="pull" ref={pullToRefresh}>↻</div>
           <main>{props.children}</main>
         </Show>
       </Match>

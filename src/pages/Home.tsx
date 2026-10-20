@@ -39,28 +39,38 @@ export default function Home() {
   const hero = () => home()?.resume[0] ?? home()?.latest[0]?.items[0];
 
   return (
-    <Show when={home()} fallback={<div class="page-loading" />}>
-      {(h) => (
-        <div class="home">
-          <Show when={hero()}>{(it) => <Hero item={it()} label={h().resume.length ? "Continue watching" : "Recently added"} />}</Show>
-          <Row title="My Media">
-            <For each={h().libraries}>{(l) => <LibCard lib={l} />}</For>
-          </Row>
-          <Show when={h().resume.length}>
-            <Row title="Continue Watching">
-              <For each={h().resume}>{(it) => <ItemCard item={it} />}</For>
-            </Row>
-          </Show>
-          <For each={[...h().latest, ...more()]}>
-            {(r) => (
-              <Row title={`Recently Added in ${r.name}`} href={`/library/${r.id}`}>
-                <For each={r.items}>{(it) => <ItemCard item={it} />}</For>
-              </Row>
-            )}
-          </For>
-          <Show when={!done()}><div ref={sentinel} class="sentinel" /></Show>
+    <Show
+      when={!home.error}
+      fallback={
+        <div class="page-error">
+          <p class="error">Cannot load: {String(home.error?.message ?? home.error)}</p>
+          <button class="btn" onClick={() => location.reload()}>Retry</button>
         </div>
-      )}
+      }
+    >
+      <Show when={home()} fallback={<div class="page-loading" />}>
+        {(h) => (
+          <div class="home">
+            <Show when={hero()}>{(it) => <Hero item={it()} label={h().resume.length ? "Continue watching" : "Recently added"} />}</Show>
+            <Row title="My Media">
+              <For each={h().libraries}>{(l) => <LibCard lib={l} />}</For>
+            </Row>
+            <Show when={h().resume.length}>
+              <Row title="Continue Watching">
+                <For each={h().resume}>{(it) => <ItemCard item={it} />}</For>
+              </Row>
+            </Show>
+            <For each={[...h().latest, ...more()]}>
+              {(r) => (
+                <Row title={`Recently Added in ${r.name}`} href={`/library/${r.id}`}>
+                  <For each={r.items}>{(it) => <ItemCard item={it} />}</For>
+                </Row>
+              )}
+            </For>
+            <Show when={!done()}><div ref={sentinel} class="sentinel" /></Show>
+          </div>
+        )}
+      </Show>
     </Show>
   );
 }

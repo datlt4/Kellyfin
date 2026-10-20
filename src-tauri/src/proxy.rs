@@ -86,16 +86,22 @@ async fn handle(p: &Proxy, req: Request) -> Result<Response, String> {
     res.body(Body::from_stream(up.bytes_stream())).map_err(|e| e.to_string())
 }
 
-/// Binds 127.0.0.1 on a free port and serves the proxy; returns the base URL.
-pub fn start(p: Proxy) -> String {
-    let std = std::net::TcpListener::bind("127.0.0.1:0").expect("bind proxy");
-    std.set_nonblocking(true).expect("nonblocking");
-    let base = format!("http://{}/{}", std.local_addr().expect("addr"), p.secret);
-    tauri::async_runtime::spawn(async move {
+/// Binds 127.0.0.1 on a free port and serves the proxy; returns the base URL and the serving task.
+pub fn start(p: Proxy) -> std::io::Result<(String, tauri::async_runtime::JoinHandle<()>)> {
+    let std = std::net::TcpListener::bind("127.0.0.1:0")?;
+    std.set_nonblocking(true)?;
+    let base = format!("http://{}/{}", std.local_addr()?, p.secret);
+    let task = tauri::async_runtime::spawn(async move {
         let listener = tokio::net::TcpListener::from_std(std).expect("tokio listener");
         let _ = axum::serve(listener, p.router()).await;
     });
-    base
+    Ok((base, task))
+}
+
+/// Whether the listener still answers; iOS reclaims a suspended app's listening sockets.
+pub async fn alive(base: &str) -> bool {
+    let r = reqwest::Client::new().request(Method::OPTIONS, format!("{base}/")).timeout(std::time::Duration::from_secs(1)).send().await;
+    matches!(r, Ok(r) if r.status() == StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -134,5 +140,16 @@ mod tests {
         assert_eq!(r.text().await.unwrap(), "bytes=0-1");
         // Wrong secret never reaches upstream.
         assert_eq!(c.get(format!("{base}/nope/api/x")).send().await.unwrap().status(), 502);
+    }
+
+    #[test]
+    fn alive_until_stopped() {
+        let (base, task) = start(Proxy::new("abc".into())).unwrap();
+        tauri::async_runtime::block_on(async {
+            assert!(alive(&base).await);
+            task.abort();
+            let _ = task.await;
+            assert!(!alive(&base).await);
+        });
     }
 }

@@ -604,6 +604,13 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
 .header-row input { min-width: 0; }
 
 .splash, .page-loading { min-height: 60vh; }
+.page-error { min-height: 60vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+.pull {
+  position: fixed; top: calc(64px + var(--safe-top)); left: 50%; z-index: 20;
+  width: 36px; height: 36px; margin-left: -18px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 22px;
+  background: var(--surface-2); color: var(--text); opacity: 0; pointer-events: none;
+}
 
 @media (max-width: 640px) {
   :root {
