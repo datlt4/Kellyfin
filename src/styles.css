@@ -17,6 +17,8 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); }
+/* iOS enlarges text in landscape otherwise. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* Room for an on-screen keyboard that overlays the page (set by viewport.ts). */
 body { padding-bottom: var(--kb, 0px); }
 body {

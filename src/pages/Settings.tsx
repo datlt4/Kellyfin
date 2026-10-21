@@ -396,6 +396,28 @@ function Libraries() {
     return (libs() ?? []).filter((l) => !f || l.name.toLowerCase().includes(f) || l.paths.some((p) => p.toLowerCase().includes(f)));
   };
   const done = () => { setEditing(null); refetch(); };
+  // Follow the scan to its end, then reload rows and thumbnails.
+  const [progress, setProgress] = createSignal<string | null>(null);
+  let alive = true;
+  onCleanup(() => (alive = false));
+  const scanLib = (l: LibRow) =>
+    act.run(async () => {
+      await api("/admin/scan", { method: "POST", body: JSON.stringify({ library_id: l.id }) });
+      try {
+        while (alive) {
+          const s = await api<ScanStatus>("/admin/scan");
+          if (!s.running) {
+            if (s.error) throw new Error(s.error);
+            break;
+          }
+          setProgress(`Scanning ${l.name} — ${s.phase} ${s.done}/${s.total}`);
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      } finally {
+        setProgress(null);
+      }
+      refetch();
+    }, `Scanned ${l.name}`);
   const setImage = async (l: LibRow) => {
     const f = await pickFile("image/*");
     if (f) act.run(async () => { await upload(`/admin/libraries/${l.id}/image`, f); refetch(); }, `Image set for ${l.name}`);
@@ -411,6 +433,7 @@ function Libraries() {
             <input type="search" placeholder="Filter" value={filter()} onInput={(e) => setFilter(e.currentTarget.value)} />
             <button class="btn primary small" onClick={() => setEditing("new")}>+ Add library</button>
           </div>
+          <Show when={progress()}><p class="muted">{progress()}</p></Show>
           <act.Note />
           <div class="lib-list">
             <For each={shown()}>
@@ -424,7 +447,7 @@ function Libraries() {
                     <For each={l.paths}>{(p) => <div class="muted small"><code>{p}</code></div>}</For>
                   </div>
                   <div class="row-btns end">
-                    <button class="btn small" onClick={() => act.run(() => api("/admin/scan", { method: "POST", body: JSON.stringify({ library_id: l.id }) }), `Scanning ${l.name}`)}>Scan</button>
+                    <button class="btn small" onClick={() => scanLib(l)}>Scan</button>
                     <button class="btn small" onClick={() => setEditing(l)}>Edit</button>
                     <button class="btn small" onClick={() => setImage(l)}>Image</button>
                     <Show when={l.has_image}>

@@ -183,7 +183,11 @@ async fn sync_library(db: &SqlitePool, images: &Path, lib: i64) -> anyhow::Resul
             Some(f) => {
                 seen.insert(path);
                 if f.size != size || f.mtime != mtime {
-                    sqlx::query("UPDATE items SET size = ?, mtime = ?, probed_at = NULL WHERE id = ?")
+                    // Replaced file: probe again and grab a new frame unless the image is custom.
+                    sqlx::query(
+                        "UPDATE items SET size = ?, mtime = ?, probed_at = NULL,
+                         image_ver = CASE WHEN image_locked = 1 THEN image_ver END WHERE id = ?",
+                    )
                         .bind(f.size)
                         .bind(f.mtime)
                         .bind(id)
