@@ -31,8 +31,10 @@ export function canCopyAudio(it: ItemDetail, audio: number | null) {
   return !!a && canPlay("mp4", it.video_codec, a.codec);
 }
 
-// WebKit on Apple (Safari, every iOS browser, Tauri on iOS/macOS).
-const appleWebKit = /AppleWebKit/.test(navigator.userAgent) && !/Chrome\/|Android/.test(navigator.userAgent);
+// WebKit on Apple (Safari, every iOS browser, Tauri on iOS/macOS). Not WebKitGTK (Tauri on Linux): its GStreamer
+// plays hev1 and streamed remuxes, and treating it as Apple sent every HEVC file to a slow server transcode.
+const appleWebKit =
+  /AppleWebKit/.test(navigator.userAgent) && /Macintosh|iPhone|iPad|iPod/.test(navigator.userAgent) && !/Chrome\/|Android/.test(navigator.userAgent);
 
 export const audioStreams = (it: ItemDetail): Stream[] => it.streams?.filter((s) => s.type === "audio") ?? [];
 
