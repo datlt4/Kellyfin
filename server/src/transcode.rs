@@ -1,5 +1,6 @@
 //! On-demand HLS: segments are transcoded only when the player asks for them.
-//! One ffmpeg job per item; a request far from what the job is producing (seek, quality switch) restarts it.
+//! A request far from what any job of the item is producing (seek, quality switch, another viewer) starts a new
+//! ffmpeg job; a few jobs per item can run side by side, so two viewers of one video do not cancel each other.
 use crate::{
     auth::User,
     error::{ApiError, ApiResult},
@@ -29,6 +30,8 @@ const MAX_WAIT_AHEAD: u32 = 6;
 const PAUSE_AHEAD: u32 = 12;
 const RESUME_AHEAD: u32 = 6;
 const IDLE_KILL: Duration = Duration::from_secs(90);
+/// Jobs kept per item; the least recently used one goes first.
+const JOBS_PER_ITEM: usize = 3;
 
 /// (short side, video bitrate kbps)
 const LADDER: &[(u32, u32)] = &[(1080, 5000), (720, 2800), (480, 1400), (360, 800), (240, 450), (144, 250)];
@@ -59,6 +62,7 @@ struct Variant {
 }
 
 struct Job {
+    item: i64,
     variant: Variant,
     start: u32,
     /// Highest finished segment index (start - 1 when none yet).
@@ -119,7 +123,8 @@ pub struct JobInfo {
 }
 
 pub struct Transcoder {
-    jobs: Mutex<HashMap<i64, Job>>,
+    /// By generation (unique per job).
+    jobs: Mutex<HashMap<u64, Job>>,
     fps: Mutex<HashMap<i64, f64>>,
     root: PathBuf,
     next_gen: Mutex<u64>,
@@ -181,9 +186,9 @@ impl Transcoder {
         self.jobs
             .lock()
             .unwrap()
-            .iter()
-            .map(|(id, j)| JobInfo {
-                item_id: *id,
+            .values()
+            .map(|j| JobInfo {
+                item_id: j.item,
                 p: j.variant.p,
                 audio: j.variant.audio,
                 encoder: j.encoder,
@@ -270,6 +275,7 @@ impl Transcoder {
         tracing::info!("transcode item {item} {}p audio {} from {at}s ({})", v.p, v.audio, Hw::name(hw));
 
         let job = Job {
+            item,
             variant: v,
             start,
             produced: start as i64 - 1,
@@ -284,18 +290,18 @@ impl Transcoder {
             generation,
         };
         let me = self.clone();
-        tokio::spawn(async move { me.watch(item, generation).await });
+        tokio::spawn(async move { me.watch(generation).await });
         Ok(job)
     }
 
     /// Throttles a job to stay a little ahead of the player and reaps it once idle.
-    async fn watch(self: Arc<Self>, item: i64, generation: u64) {
+    async fn watch(self: Arc<Self>, generation: u64) {
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
             let mut jobs = self.jobs.lock().unwrap();
-            let Some(j) = jobs.get_mut(&item).filter(|j| j.generation == generation) else { return };
+            let Some(j) = jobs.get_mut(&generation) else { return };
             if j.last_req.elapsed() > IDLE_KILL {
-                jobs.remove(&item);
+                jobs.remove(&generation);
                 return;
             }
             j.refresh_produced();
@@ -313,22 +319,31 @@ impl Transcoder {
         let mut generation;
         {
             let mut jobs = self.jobs.lock().unwrap();
-            let reuse = jobs.get_mut(&item).filter(|j| j.variant == v && n >= j.start).is_some_and(|j| {
+            let near = jobs.values_mut().filter(|j| j.item == item && j.variant == v && n >= j.start).find_map(|j| {
                 j.refresh_produced();
-                n as i64 <= j.produced + MAX_WAIT_AHEAD as i64
+                (n as i64 <= j.produced + MAX_WAIT_AHEAD as i64).then_some(j.generation)
             });
-            if !reuse {
-                jobs.remove(&item);
-                let job = self.spawn(item, src, v, n, hw.as_ref())?;
-                jobs.insert(item, job);
-            }
-            let j = jobs.get_mut(&item).unwrap();
+            generation = match near {
+                Some(g) => g,
+                None => {
+                    let mine: Vec<(Instant, u64)> =
+                        jobs.values().filter(|j| j.item == item).map(|j| (j.last_req, j.generation)).collect();
+                    if mine.len() >= JOBS_PER_ITEM {
+                        let oldest = mine.iter().min().unwrap().1;
+                        jobs.remove(&oldest);
+                    }
+                    let job = self.spawn(item, src, v, n, hw.as_ref())?;
+                    let g = job.generation;
+                    jobs.insert(g, job);
+                    g
+                }
+            };
+            let j = jobs.get_mut(&generation).unwrap();
             j.last_req = Instant::now();
             j.last_seg = n;
             if n as i64 > j.produced {
                 j.signal(false);
             }
-            generation = j.generation;
         }
 
         let deadline = Instant::now() + Duration::from_secs(45);
@@ -336,7 +351,7 @@ impl Transcoder {
         loop {
             let (path, exited) = {
                 let mut jobs = self.jobs.lock().unwrap();
-                let Some(j) = jobs.get_mut(&item).filter(|j| j.generation == generation) else {
+                let Some(j) = jobs.get_mut(&generation) else {
                     anyhow::bail!("superseded");
                 };
                 let path = j.dir.join(format!("{n}.ts"));
@@ -358,10 +373,10 @@ impl Transcoder {
                     retried_sw = true;
                     tracing::warn!("{} transcode failed for item {item}, retrying with x264", Hw::name(hw.as_ref()));
                     let mut jobs = self.jobs.lock().unwrap();
-                    jobs.remove(&item);
+                    jobs.remove(&generation);
                     let job = self.spawn(item, src, v, n, None)?;
                     generation = job.generation;
-                    jobs.insert(item, job);
+                    jobs.insert(generation, job);
                     continue;
                 }
                 anyhow::bail!("transcoder exited before segment {n}");

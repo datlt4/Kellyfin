@@ -717,7 +717,7 @@ function PlayerView(props: { id: string }) {
             <button class="icon" onClick={() => (video.muted = !video.muted)} aria-label={muted() ? "Unmute" : "Mute"}>
               <Icon name={muted() || volume() === 0 ? "mute" : "volume"} />
             </button>
-            <input type="range" min="0" max="1" step="0.05" value={muted() ? 0 : volume()} onInput={(e) => setVol(Number(e.currentTarget.value))} aria-label="Volume" />
+            <input type="range" min="0" max="1" step="0.05" value={muted() ? 0 : volume()} style={{ "--v": muted() ? 0 : volume() }} onInput={(e) => setVol(Number(e.currentTarget.value))} aria-label="Volume" />
           </div>
           <Show when={item()}>
             <button class="icon" onClick={() => setMenu(menu() === "quality" ? null : "quality")} aria-label="Quality"><Icon name="gear" /></button>

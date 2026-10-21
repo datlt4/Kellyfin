@@ -300,7 +300,18 @@ main { padding-bottom: 48px; }
 .icon.on { color: var(--accent-2); }
 .icon.small { width: 28px; height: 28px; }
 .vol { display: flex; align-items: center; }
-.vol input { width: 90px; accent-color: var(--accent-2); }
+/* Drawn by hand: native sliders differ per engine (WebKitGTK's fill stopped short of the thumb). */
+.vol input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 90px;
+  height: 4px;
+  margin: 0 6px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent-2) calc(6px + var(--v) * (100% - 12px)), rgba(255, 255, 255, 0.3) 0);
+}
+.vol input::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; }
+.vol input::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; }
 @media (pointer: coarse) { .vol input { display: none; } }
 .menu-shade { position: absolute; inset: 0; z-index: 4; }
 .p-menu {
