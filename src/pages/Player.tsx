@@ -469,6 +469,7 @@ function PlayerView(props: { id: string }) {
 
   let nextTimer: number | undefined;
   function onEnded() {
+    if (upNext() !== null) return; // both the end-of-stream stall and "ended" fired
     report();
     const next = item()?.next_id;
     if (!next) return;
@@ -501,7 +502,16 @@ function PlayerView(props: { id: string }) {
         poster={item() ? img(item()!, "l") : undefined}
         onPlay={() => { setPlaying(true); poke(); }}
         onPause={() => { setPlaying(false); setUi(true); report(); }}
-        onWaiting={() => { setWaiting(true); onStall(); }}
+        onWaiting={() => {
+          // The playlist's last segment can promise a few ms more than the encode holds; iOS then waits forever.
+          if (duration() - now() < 2) {
+            video.pause();
+            setWaiting(false);
+            return onEnded();
+          }
+          setWaiting(true);
+          onStall();
+        }}
         onPlaying={() => { setWaiting(false); pendingAt = null; }}
         onCanPlay={() => setWaiting(false)}
         onSeeked={() => report()}
