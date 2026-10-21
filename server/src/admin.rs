@@ -422,10 +422,11 @@ pub async fn set_item_image(State(st): State<AppState>, _a: Admin, Path(id): Pat
 
 /// Back to automatic: a frame grabbed from the video.
 pub async fn delete_item_image(State(st): State<AppState>, _a: Admin, Path(id): Path<i64>) -> ApiResult<StatusCode> {
-    let (path, duration): (String, Option<f64>) = sqlx::query_as("SELECT path, duration FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
+    let (path, duration, crop): (String, Option<f64>, Option<String>) =
+        sqlx::query_as("SELECT path, duration, crop FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
     let dir = images::dir(&st.images, "item", id);
     let _ = tokio::fs::remove_dir_all(&dir).await;
-    let (ver, color) = match images::from_video(&path, duration.unwrap_or(0.0), &dir).await {
+    let (ver, color) = match images::from_video(&path, duration.unwrap_or(0.0), crop.as_deref(), &dir).await {
         Ok(c) => (Some(util::now()), Some(c)),
         Err(e) => {
             tracing::warn!("thumbnail {path}: {e:#}");

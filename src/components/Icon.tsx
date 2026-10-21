@@ -3,6 +3,7 @@ import { Show } from "solid-js";
 // Inline SVG icons: text glyphs (▶ ↺ ⛶) sit off-centre and vary between fonts.
 const PATHS = {
   play: "M8 5.14v13.72a1 1 0 0 0 1.52.85l11-6.86a1 1 0 0 0 0-1.7l-11-6.86A1 1 0 0 0 8 5.14z",
+  crop: "M17 15h2V7a2 2 0 0 0-2-2H9v2h8v8zM7 17V1H5v4H1v2h4v10a2 2 0 0 0 2 2h10v4h2v-4h4v-2H7z",
   pause: "M7 5h3.5v14H7zM13.5 5H17v14h-3.5z",
   back10: "M12 5V2L7 6l5 4V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z",
   fwd10: "M12 5V2l5 4-5 4V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z",

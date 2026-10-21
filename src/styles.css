@@ -294,6 +294,7 @@ main { padding-bottom: 48px; }
   background: #000;
   user-select: none;
   -webkit-user-select: none;
+  overflow: hidden;
 }
 .player video { width: 100%; height: 100%; object-fit: contain; display: block; touch-action: none; }
 .icon.on { color: var(--accent-2); }

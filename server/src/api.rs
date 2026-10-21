@@ -250,6 +250,8 @@ struct ItemDetail {
     container: Option<String>,
     video_codec: Option<String>,
     bitrate: Option<i64>,
+    /// Picture without black bars, w:h:x:y in source pixels ('' = none, null = not checked).
+    crop: Option<String>,
     #[serde(skip)]
     streams_raw: Option<String>,
     #[sqlx(skip)]
@@ -274,7 +276,7 @@ struct ItemDetail {
 
 async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> ApiResult<Json<ItemDetail>> {
     let sql = format!(
-        "SELECT c.*, l.name AS library_name, i.path, i.size, i.added_at, i.container, i.video_codec, i.bitrate,
+        "SELECT c.*, l.name AS library_name, i.path, i.size, i.added_at, i.container, i.video_codec, i.bitrate, i.crop,
            i.streams AS streams_raw, COALESCE(u.favorite, 0) AS favorite, i.sort_title
          FROM ({CARD} WHERE i.id = ?2) c
          JOIN items i ON i.id = c.id JOIN libraries l ON l.id = i.library_id

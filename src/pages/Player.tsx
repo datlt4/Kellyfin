@@ -358,6 +358,32 @@ function PlayerView(props: { id: string }) {
   const pip = () =>
     document.pictureInPictureElement ? document.exitPictureInPicture() : video.requestPictureInPicture().catch(() => {});
 
+  // Black bars found by the scan: zoom the picture past them, unless turned off (remembered).
+  const [cropOn, setCropOn] = createSignal(localStorage.getItem("crop") !== "0");
+  const cropBox = () => {
+    const it = item();
+    const c = it?.crop?.split(":").map(Number);
+    if (!it?.width || !it.height || c?.length !== 4) return null;
+    return { w: c[0] / it.width, h: c[1] / it.height, x: c[2] / it.width, y: c[3] / it.height };
+  };
+  const [frame, setFrame] = createSignal({ bw: 0, bh: 0, vw: 0, vh: 0 });
+  const measure = () => setFrame({ bw: root.clientWidth, bh: root.clientHeight, vw: video.videoWidth, vh: video.videoHeight });
+  const cropTransform = () => {
+    const c = cropBox(), f = frame();
+    if (!cropOn() || !c || !f.vw || !f.bw) return undefined;
+    const fit = Math.min(f.bw / f.vw, f.bh / f.vh); // object-fit: contain
+    const zoom = Math.min(f.bw / (c.w * f.vw), f.bh / (c.h * f.vh));
+    const tx = -(c.x + c.w / 2 - 0.5) * f.vw * zoom;
+    const ty = -(c.y + c.h / 2 - 0.5) * f.vh * zoom;
+    return `translate(${tx}px, ${ty}px) scale(${zoom / fit})`;
+  };
+  const toggleCrop = () => {
+    setCropOn(!cropOn());
+    try {
+      localStorage.setItem("crop", cropOn() ? "1" : "0");
+    } catch {}
+  };
+
   const [hud, setHud] = createSignal<{ kind: "speed"; v: number; note?: string } | null>(null);
   let hudTimer: number | undefined;
 
@@ -406,7 +432,9 @@ function PlayerView(props: { id: string }) {
     setAirplayPick(() => airplay(video));
     const ro = new ResizeObserver(() => root.style.setProperty("--controls-h", `${controls.offsetHeight}px`));
     ro.observe(controls);
-    onCleanup(() => ro.disconnect());
+    const rr = new ResizeObserver(measure);
+    rr.observe(root);
+    onCleanup(() => { ro.disconnect(); rr.disconnect(); });
     window.addEventListener("keydown", onKey);
     window.addEventListener("pagehide", onPageHide);
     document.addEventListener("visibilitychange", onHide);
@@ -480,6 +508,7 @@ function PlayerView(props: { id: string }) {
         onVolumeChange={() => { setVolume(video.volume); setMuted(video.muted); }}
         onLoadedData={() => (video.playbackRate = rate())}
         onLoadedMetadata={() => {
+          measure();
           if (pendingSkip > 0.3) video.currentTime = pendingSkip;
           pendingSkip = 0;
           pendingAt = null;
@@ -496,6 +525,7 @@ function PlayerView(props: { id: string }) {
           load(at);
         }}
         onPointerUp={onTap}
+        style={{ transform: cropTransform() }}
       />
 
       <Show when={hud()}>
@@ -628,6 +658,9 @@ function PlayerView(props: { id: string }) {
           </button>
         </Show>
         <Show when={airplayPick()}>{(pick) => <button class="icon" onClick={() => pick()()} aria-label="AirPlay"><Icon name="airplay" /></button>}</Show>
+        <Show when={cropBox()}>
+          <button class="icon" classList={{ on: cropOn() }} onClick={toggleCrop} aria-label="Crop black bars" title="Crop black bars"><Icon name="crop" /></button>
+        </Show>
         <Show when={pipOk}><button class="icon" onClick={pip} aria-label="Picture in picture"><Icon name="pip" /></button></Show>
       </div>
 

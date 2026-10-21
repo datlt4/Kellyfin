@@ -1,4 +1,4 @@
-//! Library scan: walk folders -> sync items -> ffprobe new files -> frame-grab missing thumbnails.
+//! Library scan: walk folders -> sync items -> ffprobe new files -> find black bars -> frame-grab missing thumbnails.
 use crate::{images, util};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -100,19 +100,50 @@ impl Scanner {
             self.tick();
         }
 
-        let todo: Vec<(i64, String, f64)> = sqlx::query_as(
-            "SELECT id, path, duration FROM items
+        let todo: Vec<(i64, String, f64, i64, i64)> = sqlx::query_as(
+            "SELECT id, path, duration, width, height FROM items
+             WHERE crop IS NULL AND duration > 0 AND width > 0 AND height > 0 AND (?1 IS NULL OR library_id = ?1)",
+        )
+        .bind(only)
+        .fetch_all(db)
+        .await?;
+        self.phase("black bars", todo.len());
+        for (id, path, duration, w, h) in todo {
+            let (db, sem) = (db.clone(), sem.clone());
+            set.spawn(async move {
+                let _p = sem.acquire().await;
+                let crop = detect_crop(&path, duration, w, h).await.unwrap_or_else(|e| {
+                    tracing::warn!("cropdetect {path}: {e:#}");
+                    String::new()
+                });
+                // Bars found: grab the thumbnail again without them, unless it is a custom image.
+                let _ = sqlx::query(
+                    "UPDATE items SET crop = ?1,
+                     image_ver = CASE WHEN ?1 <> '' AND image_locked = 0 THEN NULL ELSE image_ver END WHERE id = ?2",
+                )
+                .bind(crop)
+                .bind(id)
+                .execute(&db)
+                .await;
+            });
+        }
+        while set.join_next().await.is_some() {
+            self.tick();
+        }
+
+        let todo: Vec<(i64, String, f64, Option<String>)> = sqlx::query_as(
+            "SELECT id, path, duration, crop FROM items
              WHERE image_ver IS NULL AND duration > 0 AND (?1 IS NULL OR library_id = ?1)",
         )
         .bind(only)
         .fetch_all(db)
         .await?;
         self.phase("thumbnails", todo.len());
-        for (id, path, duration) in todo {
+        for (id, path, duration, crop) in todo {
             let (db, sem, dst) = (db.clone(), sem.clone(), images::dir(images, "item", id));
             set.spawn(async move {
                 let _p = sem.acquire().await;
-                match images::from_video(&path, duration, &dst).await {
+                match images::from_video(&path, duration, crop.as_deref(), &dst).await {
                     Ok(color) => {
                         let _ = sqlx::query("UPDATE items SET image_ver = ?, color = ? WHERE id = ?")
                             .bind(util::now())
@@ -185,7 +216,7 @@ async fn sync_library(db: &SqlitePool, images: &Path, lib: i64) -> anyhow::Resul
                 if f.size != size || f.mtime != mtime {
                     // Replaced file: probe again and grab a new frame unless the image is custom.
                     sqlx::query(
-                        "UPDATE items SET size = ?, mtime = ?, probed_at = NULL,
+                        "UPDATE items SET size = ?, mtime = ?, probed_at = NULL, crop = NULL,
                          image_ver = CASE WHEN image_locked = 1 THEN image_ver END WHERE id = ?",
                     )
                         .bind(f.size)
@@ -221,6 +252,50 @@ async fn sync_library(db: &SqlitePool, images: &Path, lib: i64) -> anyhow::Resul
         let _ = tokio::fs::remove_dir_all(images::dir(images, "item", id)).await;
     }
     Ok(())
+}
+
+/// Black bars around the picture: '' when there are none, else the picture as w:h:x:y.
+/// Several points of the video are sampled and their pictures united, so a dark scene cannot over-crop.
+async fn detect_crop(path: &str, duration: f64, w: i64, h: i64) -> anyhow::Result<String> {
+    let mut found = Vec::new();
+    for at in [0.15, 0.35, 0.5, 0.65, 0.85] {
+        let out = tokio::time::timeout(
+            Duration::from_secs(60),
+            Command::new("ffmpeg")
+                .args(["-hide_banner", "-nostats", "-ss", &format!("{:.2}", duration * at)])
+                .arg("-i")
+                .arg(format!("file:{path}"))
+                .args(["-map", "0:v:0", "-frames:v", "24", "-vf", "cropdetect=limit=24:round=2:reset=0", "-f", "null", "-"])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await??;
+        found.extend(String::from_utf8_lossy(&out.stderr).lines().filter_map(parse_crop).last());
+    }
+    Ok(unite_crops(&found, w, h))
+}
+
+/// The last "crop=w:h:x:y" of a cropdetect log line.
+fn parse_crop(line: &str) -> Option<[i64; 4]> {
+    let v: Vec<i64> = line.rsplit_once("crop=")?.1.split(':').map(|n| n.trim().parse().ok()).collect::<Option<_>>()?;
+    v.try_into().ok()
+}
+
+/// Union of the sampled pictures; '' when the bars are under 1% (or every sample was unusable).
+fn unite_crops(found: &[[i64; 4]], w: i64, h: i64) -> String {
+    // Black frames give empty or negative boxes.
+    let ok: Vec<_> = found.iter().filter(|c| c[0] > w / 4 && c[1] > h / 4 && c[2] >= 0 && c[3] >= 0).collect();
+    if ok.is_empty() {
+        return String::new();
+    }
+    let x0 = ok.iter().map(|c| c[2]).min().unwrap();
+    let y0 = ok.iter().map(|c| c[3]).min().unwrap();
+    let x1 = ok.iter().map(|c| c[2] + c[0]).max().unwrap().min(w);
+    let y1 = ok.iter().map(|c| c[3] + c[1]).max().unwrap().min(h);
+    if (x1 - x0) * 100 >= w * 99 && (y1 - y0) * 100 >= h * 99 {
+        return String::new();
+    }
+    format!("{}:{}:{}:{}", x1 - x0, y1 - y0, x0, y0)
 }
 
 async fn probe_item(db: &SqlitePool, id: i64, path: &str) -> anyhow::Result<()> {
@@ -323,5 +398,20 @@ mod tests {
         assert_eq!(p.video_codec.as_deref(), Some("h264"));
         assert_eq!(p.streams.as_array().unwrap().len(), 2);
         assert_eq!(p.streams[1]["lang"], "vie");
+    }
+
+    #[test]
+    fn unites_black_bars() {
+        let line = "[Parsed_cropdetect_0 @ 0x55] x1:0 x2:1919 y1:138 y2:941 w:1920 h:800 x:0 y:140 pts:1 t:0.04 limit:0.094 crop=1920:800:0:140";
+        assert_eq!(parse_crop(line), Some([1920, 800, 0, 140]));
+        assert_eq!(parse_crop("frame=24"), None);
+        // A dark sample (smaller box) does not shrink the picture; a black frame is ignored.
+        let found = [[1920, 800, 0, 140], [1600, 600, 160, 240], [-1904, -1072, 1912, 1080]];
+        assert_eq!(unite_crops(&found, 1920, 1080), "1920:800:0:140");
+        // Pillarbox on both sides.
+        assert_eq!(unite_crops(&[[1440, 1080, 240, 0]], 1920, 1080), "1440:1080:240:0");
+        // Under 1%: nothing to cut.
+        assert_eq!(unite_crops(&[[1916, 1076, 2, 2]], 1920, 1080), "");
+        assert_eq!(unite_crops(&[], 1920, 1080), "");
     }
 }

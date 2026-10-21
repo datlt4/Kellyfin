@@ -49,7 +49,8 @@ async fn restore(db: &SqlitePool, images_dir: &Path, id: i64, path: &str, durati
     let t = util::file_stem(path);
     let dir = images::dir(images_dir, "item", id);
     let _ = tokio::fs::remove_dir_all(&dir).await;
-    let (ver, color) = match images::from_video(path, duration.unwrap_or(0.0), &dir).await {
+    let crop: Option<String> = sqlx::query_scalar("SELECT crop FROM items WHERE id = ?").bind(id).fetch_one(db).await?;
+    let (ver, color) = match images::from_video(path, duration.unwrap_or(0.0), crop.as_deref(), &dir).await {
         Ok(c) => (Some(util::now()), Some(c)),
         Err(e) => {
             tracing::warn!("thumbnail {path}: {e:#}");

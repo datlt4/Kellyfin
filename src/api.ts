@@ -36,6 +36,8 @@ export type ItemDetail = Card & {
   container: string | null;
   video_codec: string | null;
   bitrate: number | null;
+  /** Picture without black bars, "w:h:x:y" in source pixels; "" or null: none. */
+  crop: string | null;
   streams: Stream[] | null;
   favorite: boolean;
   ext: string;
