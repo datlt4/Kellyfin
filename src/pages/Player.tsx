@@ -301,6 +301,18 @@ function PlayerView(props: { id: string }) {
     video.volume = v;
     video.muted = v === 0;
   }
+  // Drawn by hand: native range inputs differ per engine (WebKitGTK's thumb never reached the end).
+  function volDrag(e: PointerEvent) {
+    const bar = e.currentTarget as HTMLElement;
+    const at = (x: number) => {
+      const r = bar.getBoundingClientRect();
+      setVol(Math.round(Math.min(1, Math.max(0, (x - r.left) / r.width)) * 20) / 20);
+    };
+    bar.setPointerCapture(e.pointerId);
+    at(e.clientX);
+    bar.onpointermove = (m) => at(m.clientX);
+    bar.onpointerup = bar.onpointercancel = () => (bar.onpointermove = null);
+  }
 
   // UI auto-hide while playing.
   let hideTimer: number | undefined;
@@ -344,7 +356,7 @@ function PlayerView(props: { id: string }) {
   const [nativeFs, setNativeFs] = createSignal(false);
   async function fullscreen() {
     if (nativeFullscreen) {
-      // Android app: hide the system bars and turn landscape even with auto-rotate off.
+      // Android app: hide the system bars and turn landscape; Linux app: fullscreen window (see native.ts).
       setNativeFs(!nativeFs());
       setFullscreen(nativeFs());
       return;
@@ -416,6 +428,7 @@ function PlayerView(props: { id: string }) {
       clearTimeout(hudTimer);
       hudTimer = window.setTimeout(() => setHud(null), 900);
     }
+    else if (k === "Escape" && nativeFs()) fullscreen();
     else if (k === "Escape" && !document.fullscreenElement) history.back();
     else return;
     e.preventDefault();
@@ -717,7 +730,10 @@ function PlayerView(props: { id: string }) {
             <button class="icon" onClick={() => (video.muted = !video.muted)} aria-label={muted() ? "Unmute" : "Mute"}>
               <Icon name={muted() || volume() === 0 ? "mute" : "volume"} />
             </button>
-            <input type="range" min="0" max="1" step="0.05" value={muted() ? 0 : volume()} style={{ "--v": muted() ? 0 : volume() }} onInput={(e) => setVol(Number(e.currentTarget.value))} aria-label="Volume" />
+            <div class="vol-bar" style={{ "--v": muted() ? 0 : volume() }} onPointerDown={volDrag} role="slider" aria-label="Volume" aria-valuemin={0} aria-valuemax={1} aria-valuenow={muted() ? 0 : volume()}>
+              <div class="vol-fill" />
+              <div class="vol-thumb" />
+            </div>
           </div>
           <Show when={item()}>
             <button class="icon" onClick={() => setMenu(menu() === "quality" ? null : "quality")} aria-label="Quality"><Icon name="gear" /></button>

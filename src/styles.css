@@ -300,19 +300,12 @@ main { padding-bottom: 48px; }
 .icon.on { color: var(--accent-2); }
 .icon.small { width: 28px; height: 28px; }
 .vol { display: flex; align-items: center; }
-/* Drawn by hand: native sliders differ per engine (WebKitGTK's fill stopped short of the thumb). */
-.vol input {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 90px;
-  height: 4px;
-  margin: 0 6px;
-  border-radius: 2px;
-  background: linear-gradient(to right, var(--accent-2) calc(6px + var(--v) * (100% - 12px)), rgba(255, 255, 255, 0.3) 0);
-}
-.vol input::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; }
-.vol input::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; }
-@media (pointer: coarse) { .vol input { display: none; } }
+.vol-bar { position: relative; width: 90px; height: 20px; margin: 0 8px 0 4px; cursor: pointer; touch-action: none; }
+.vol-bar::before, .vol-fill { content: ""; position: absolute; left: 0; top: 8px; height: 4px; border-radius: 2px; }
+.vol-bar::before { right: 0; background: rgba(255, 255, 255, 0.3); }
+.vol-fill { width: calc(var(--v) * 100%); background: var(--accent-2); }
+.vol-thumb { position: absolute; top: 4px; left: calc(var(--v) * 100% - 6px); width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+@media (pointer: coarse) { .vol-bar { display: none; } }
 .menu-shade { position: absolute; inset: 0; z-index: 4; }
 .p-menu {
   position: absolute;

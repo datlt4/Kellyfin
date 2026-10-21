@@ -1,11 +1,20 @@
 import { useLocation } from "@solidjs/router";
 import { createResource, Match, Show, Switch, type ParentProps } from "solid-js";
-import { restore, user } from "./api";
+import { isTauri, restore, user } from "./api";
 import TopBar from "./components/TopBar";
 import UpdateBanner from "./components/UpdateBanner";
 import { autoCheck } from "./update";
 import Login from "./pages/Login";
 import { pullToRefresh } from "./pull";
+
+// The desktop apps have no browser reload: F5 / Ctrl+R / Cmd+R do it.
+if (isTauri)
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")) {
+      e.preventDefault();
+      location.reload();
+    }
+  });
 
 export default function App(props: ParentProps) {
   const [ready] = createResource(restore);

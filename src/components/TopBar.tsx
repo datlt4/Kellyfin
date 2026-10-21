@@ -116,6 +116,7 @@ export default function TopBar() {
               )}
             </For>
             <button onClick={() => { switchServer(); nav("/"); }}>Add / edit servers…</button>
+            <button onClick={() => location.reload()}>Reload (F5)</button>
             <button onClick={async () => { await logout(); nav("/"); }}>Sign out</button>
             <div class="menu-foot">App {appVersion}{serverVersion() ? ` · Server ${serverVersion()}` : ""}</div>
           </div>
