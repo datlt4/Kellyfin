@@ -525,6 +525,7 @@ function PlayerView(props: { id: string }) {
           load(at);
         }}
         onPointerUp={onTap}
+        onResize={measure}
         style={{ transform: cropTransform() }}
       />
 

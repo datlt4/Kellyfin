@@ -1,6 +1,6 @@
 # Kellyfin — handoff
 
-State on 2026-10-20, version **2.0.6** (2.0.0: in-app updates, AI upscaling, Jellyfin retired; 2.0.1: iOS settings fixes; 2.0.2: iOS proxy restart after suspension, pull to refresh; 2.0.3: pull gesture no longer cancelled by first-touch jitter; 2.0.4: player swipes removed, no page zoom, "10" in skip icons; 2.0.5: rescans refresh thumbnails of replaced files, scan progress in Libraries, no iOS landscape text inflation; 2.0.6: black bars detected by the scan and cropped in the player and thumbnails). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
+State on 2026-10-20, version **2.0.7** (2.0.0: in-app updates, AI upscaling, Jellyfin retired; 2.0.1: iOS settings fixes; 2.0.2: iOS proxy restart after suspension, pull to refresh; 2.0.3: pull gesture no longer cancelled by first-touch jitter; 2.0.4: player swipes removed, no page zoom, "10" in skip icons; 2.0.5: rescans refresh thumbnails of replaced files, scan progress in Libraries, no iOS landscape text inflation; 2.0.6: black bars detected by the scan and cropped in the player and thumbnails; 2.0.7: crop applied as soon as the video size is known, round icon buttons on phones). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
 `release.yml` (branch `release/v1.0.0`, tag `v1.0.0`, GitHub release with desktop and mobile builds).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
@@ -138,7 +138,7 @@ video; the samples are united (a dark scene cannot over-crop, black frames are i
 (`NULL` unchecked, `''` none or under 1%, else `w:h:x:y`). Items with bars get their thumbnail grabbed again,
 cropped, unless the image is custom/imported (`image_locked`; "Auto image" on the item redoes it cropped). The
 player zooms the `<video>` with a CSS transform so the picture fills the screen (works for direct play, remux,
-HLS and AI versions, the file is never touched); a crop button in the top row turns it off (`localStorage.crop`).
+HLS and AI versions, the file is never touched). The zoom needs `videoWidth`, which iOS native HLS only knows after the first frame: it is re-measured on the video's `resize` event. A crop button in the top row turns it off (`localStorage.crop`).
 A changed file (size/mtime) is checked again.
 
 Images are rendered **once** into WebP `s/m/l` and served from `/img/...` with
@@ -429,6 +429,7 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
 | `80e2f07` | 2.0.0 | in-app updates (signed desktop updater, APK link, iOS notice), AI upscale pipeline + worker, back button on the server picker, Jellyfin retired | Drive the updater from Rust commands (no extra webview permissions); the upscale worker pulls work so the GPU PC needs no inbound access. Released: 34 assets incl. 13 `.sig` and `latest.json` covering all 20 desktop platform keys; A8 Star updated 1.5.0 → 2.0.0. |
 | `b408b45` | 2.0.1 | iOS: Settings → Libraries rows blank, "AI upscale" tab wrapped | Safari 17 sized a grid row ~17000px because an `img` with `height: 100%` sat in an `aspect-ratio` grid item (content drawn far below, the visible row empty); the image is now absolutely positioned. Tabs `nowrap`. Android did not show either. Released (34 assets, CI green). |
+| (next) | 2.0.7 | crop zoom re-measured on `resize`; icon buttons `flex: none` and hover only on `(hover: hover)` | On iOS HLS `videoWidth` is 0 at `loadedmetadata`, so the zoom stayed off until something else resized the page. A long title shrank the top-row buttons into ovals; iOS keeps `:hover` after a tap. |
 | `b9d4045` | 2.0.6 | black-bar detection (`cropdetect`, migration `0005_crop`), player zoom past the bars with an off switch, cropped thumbnails | Checked on Energon: 1280×720 files with 160 px pillarbox → `960:720:160:0`. Rescan everything once to fill `crop`. Released (34 assets). |
 | `ba3d65e` | 2.0.5 | a replaced file (size/mtime changed) gets a new frame-grab thumbnail unless its image is custom; Scan in Settings → Libraries shows progress until the scan ends and then reloads rows; `text-size-adjust: 100%` | A per-library Scan used to leave "Scanning X" on screen forever and only re-probed changed files, so cropped re-encodes kept their old black-bar thumbnails. iOS inflates text in landscape unless `-webkit-text-size-adjust` is set. |
 | `ff35e24` | 2.0.4 | remove brightness/volume swipes (and their Android/iOS native code), disable page zoom, "10" inside the skip icons | A double tap zoomed the iOS page and the swipe handlers then ate the pinch back. Released (34 assets). |

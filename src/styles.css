@@ -388,7 +388,7 @@ main { padding-bottom: 48px; }
   .icon.pointer-only { display: none; }
   /* One row on a portrait phone: clock plus seven buttons. */
   .p-bottom .p-row { gap: 0; flex-wrap: nowrap; }
-  .p-bottom .p-row .icon { width: 36px; height: 40px; }
+  .p-bottom .p-row .icon { width: 36px; height: 36px; }
   .p-bottom .p-row .clock { font-size: 12px; margin-left: 0; white-space: nowrap; }
 }
 .p-top {
@@ -422,8 +422,10 @@ main { padding-bottom: 48px; }
   color: inherit;
   display: grid;
   place-items: center;
+  flex: none; /* a long title must not squeeze it into an oval */
 }
-.icon:hover { background: rgba(255, 255, 255, 0.12); }
+/* Touch screens keep :hover after a tap. */
+@media (hover: hover) { .icon:hover { background: rgba(255, 255, 255, 0.12); } }
 .ico { display: block; flex: none; }
 a.icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; }
 .seek { position: relative; height: 20px; margin-bottom: 4px; }
