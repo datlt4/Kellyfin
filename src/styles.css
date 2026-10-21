@@ -375,7 +375,7 @@ main { padding-bottom: 48px; }
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  display: none;
+  display: flex;
   align-items: center;
   gap: clamp(24px, 8vw, 64px);
   transition: opacity 0.2s;
@@ -384,8 +384,6 @@ main { padding-bottom: 48px; }
 .p-center .icon.big { width: 56px; height: 56px; }
 .p-center .icon.huge { width: 76px; height: 76px; }
 @media (pointer: coarse) {
-  .p-center { display: flex; }
-  .icon.pointer-only { display: none; }
   /* One row on a portrait phone: clock plus seven buttons. */
   .p-bottom .p-row { gap: 0; flex-wrap: nowrap; }
   .p-bottom .p-row .icon { width: 36px; height: 36px; }

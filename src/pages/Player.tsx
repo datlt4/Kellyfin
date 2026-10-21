@@ -675,7 +675,7 @@ function PlayerView(props: { id: string }) {
         <Show when={pipOk}><button class="icon" onClick={pip} aria-label="Picture in picture"><Icon name="pip" /></button></Show>
       </div>
 
-      {/* Touch screens: play/pause and ±10 s in the middle, the YouTube way. */}
+      {/* Play/pause and ±10 s in the middle, the YouTube way. */}
       <div class="p-center" onPointerUp={(e) => e.stopPropagation()}>
         <button class="icon big" onClick={() => seek(now() - 10)} aria-label="Back 10 seconds"><Icon name="back10" size={34} /></button>
         <button class="icon huge" onClick={toggle} aria-label={isPlaying() ? "Pause" : "Play"}><Icon name={isPlaying() ? "pause" : "play"} size={44} /></button>
@@ -698,10 +698,13 @@ function PlayerView(props: { id: string }) {
           />
         </div>
         <div class="p-row">
-          <button class="icon pointer-only" onClick={toggle} aria-label={isPlaying() ? "Pause" : "Play"}><Icon name={isPlaying() ? "pause" : "play"} size={26} /></button>
-          <button class="icon pointer-only" onClick={() => seek(now() - 10)} aria-label="Back 10 seconds"><Icon name="back10" /></button>
-          <button class="icon pointer-only" onClick={() => seek(now() + 10)} aria-label="Forward 10 seconds"><Icon name="fwd10" /></button>
+          <Show when={item()?.prev_id}>
+            <button class="icon" onClick={() => nav(`/play/${item()!.prev_id}`, { replace: true })} aria-label="Previous episode"><Icon name="prev" /></button>
+          </Show>
           <span class="clock">{fmtClock(shown())} / {fmtClock(duration())}</span>
+          <Show when={item()?.next_id}>
+            <button class="icon" onClick={() => nav(`/play/${item()!.next_id}`, { replace: true })} aria-label="Next episode"><Icon name="next" /></button>
+          </Show>
           <span class="grow" />
           <button class="icon" classList={{ on: fav() }} onClick={toggleFav} aria-label="Favorite"><Icon name="heart" /></button>
           <Show when={item()?.subtitles.length}>
@@ -718,9 +721,6 @@ function PlayerView(props: { id: string }) {
           </div>
           <Show when={item()}>
             <button class="icon" onClick={() => setMenu(menu() === "quality" ? null : "quality")} aria-label="Quality"><Icon name="gear" /></button>
-          </Show>
-          <Show when={item()?.next_id}>
-            <button class="icon" onClick={() => nav(`/play/${item()!.next_id}`, { replace: true })} aria-label="Next episode"><Icon name="next" /></button>
           </Show>
           <button class="icon" onClick={fullscreen} aria-label="Fullscreen"><Icon name="fullscreen" /></button>
         </div>

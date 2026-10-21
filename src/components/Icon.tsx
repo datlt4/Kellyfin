@@ -7,6 +7,7 @@ const PATHS = {
   pause: "M7 5h3.5v14H7zM13.5 5H17v14h-3.5z",
   back10: "M12 5V2L7 6l5 4V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z",
   fwd10: "M12 5V2l5 4-5 4V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z",
+  prev: "M18 6.5v11a.8.8 0 0 1-1.25.66L9 12.66V17.5H7v-11h2v4.84l7.75-5.5A.8.8 0 0 1 18 6.5z",
   next: "M6 6.5v11a.8.8 0 0 0 1.25.66L15 12.66V17.5h2v-11h-2v4.84L7.25 5.84A.8.8 0 0 0 6 6.5z",
   pip: "M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6h-2V5H5v14h6v2H5a2 2 0 0 1-2-2zm10 8h8v8h-8z",
   fullscreen: "M4 4h6v2H6v4H4zm10 0h6v6h-2V6h-4zM4 14h2v4h4v2H4zm14 0h2v6h-6v-2h4z",
