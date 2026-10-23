@@ -1,7 +1,7 @@
 import { createSignal, For, Show } from "solid-js";
 import { serverVersion } from "../api";
 import {
-  activeServer, appVersion, authToken, HERE, isTauri, login, probeServer, restore, savedServers, saveServers, useServer, type ServerProfile,
+  activeServer, appVersion, authToken, HERE, isTauri, login, probeServer, restore, savedServers, saveServers, unreachable, useServer, type ServerProfile,
 } from "../api";
 
 /** Add / edit a saved server: URL plus optional headers (e.g. a Pangolin access token). */
@@ -142,7 +142,7 @@ export default function Login() {
           </Show>
           <label>Username<input value={name()} onInput={(e) => setName(e.currentTarget.value)} autocomplete="username" autocapitalize="off" /></label>
           <label>Password<input type="password" value={pw()} onInput={(e) => setPw(e.currentTarget.value)} autocomplete="current-password" /></label>
-          <Show when={err()}><p class="error">{err()}</p></Show>
+          <Show when={err() || unreachable()}><p class="error">{err() || unreachable()}</p></Show>
           <button class="primary" disabled={busy() || (isTauri && !activeServer())}>Sign in</button>
           <p class="version">Kellyfin app {appVersion}{serverVersion() ? ` · server ${serverVersion()}` : ""}</p>
         </form>

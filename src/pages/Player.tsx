@@ -319,7 +319,38 @@ function PlayerView(props: { id: string }) {
   function poke() {
     setUi(true);
     clearTimeout(hideTimer);
-    hideTimer = window.setTimeout(() => playing() && !menu() && setUi(false), HIDE_MS);
+    hideTimer = window.setTimeout(hide, HIDE_MS);
+  }
+  // Not while the mouse rests on the controls.
+  const hide = () => playing() && !menu() && !root.querySelector(".p-top:hover, .p-bottom:hover") && setUi(false);
+  /** Mouse left the player: fade the controls out after a second. */
+  function onLeave(e: PointerEvent) {
+    if (e.pointerType !== "mouse") return;
+    clearTimeout(hideTimer);
+    hideTimer = window.setTimeout(() => playing() && !menu() && setUi(false), 1000);
+  }
+
+  // Hand-drawn: an invisible range input mapped clicks with its thumb inset, so the fill landed short of the click.
+  function seekDrag(e: PointerEvent) {
+    if (!duration()) return;
+    const bar = e.currentTarget as HTMLElement;
+    const at = (x: number) => {
+      const r = bar.getBoundingClientRect();
+      return Math.min(1, Math.max(0, (x - r.left) / r.width)) * duration();
+    };
+    const done = () => (bar.onpointermove = bar.onpointerup = bar.onpointercancel = null);
+    bar.setPointerCapture(e.pointerId);
+    setScrub(at(e.clientX));
+    bar.onpointermove = (m) => setScrub(at(m.clientX));
+    bar.onpointerup = (u) => {
+      done();
+      seek(at(u.clientX));
+      setScrub(null);
+    };
+    bar.onpointercancel = () => {
+      done();
+      setScrub(null);
+    };
   }
 
   // While casting, the controls drive the TV instead of the local <video>.
@@ -417,7 +448,9 @@ function PlayerView(props: { id: string }) {
   function onKey(e: KeyboardEvent) {
     if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
     const k = e.key;
-    if (k === " " || k === "k") toggle();
+    // Alt+P / Option+P (on a Mac the key reads "π", so match the physical key).
+    if (e.altKey && e.code === "KeyP") pip();
+    else if (k === " " || k === "k") toggle();
     else if (k === "ArrowLeft" || k === "j") seek(now() - 10);
     else if (k === "ArrowRight" || k === "l") seek(now() + 10);
     else if (k === "f") fullscreen();
@@ -506,7 +539,7 @@ function PlayerView(props: { id: string }) {
   };
 
   return (
-    <div class="player" classList={{ "ui-hidden": !ui() }} ref={root} onPointerMove={(e) => e.pointerType === "mouse" && poke()}>
+    <div class="player" classList={{ "ui-hidden": !ui() }} ref={root} onPointerMove={(e) => e.pointerType === "mouse" && poke()} onPointerLeave={onLeave}>
       <video
         ref={video}
         x-webkit-airplay="allow"
@@ -696,19 +729,10 @@ function PlayerView(props: { id: string }) {
       </div>
 
       <div class="p-bottom" ref={controls} onPointerUp={(e) => e.stopPropagation()}>
-        <div class="seek">
+        <div class="seek" classList={{ dragging: scrub() !== null }} onPointerDown={seekDrag} role="slider" aria-label="Seek" aria-valuemin={0} aria-valuemax={duration()} aria-valuenow={Math.round(shown())}>
           <div class="seek-buf" style={{ width: `${bufferedPct()}%` }} />
           <div class="seek-fill" style={{ width: `${pct()}%` }} />
-          <input
-            type="range"
-            min="0"
-            max={duration() || 0}
-            step="1"
-            value={shown()}
-            onInput={(e) => setScrub(Number(e.currentTarget.value))}
-            onChange={(e) => { seek(Number(e.currentTarget.value)); setScrub(null); }}
-            aria-label="Seek"
-          />
+          <div class="seek-thumb" style={{ left: `${pct()}%` }} />
         </div>
         <div class="p-row">
           <Show when={item()?.prev_id}>

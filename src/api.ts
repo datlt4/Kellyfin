@@ -166,6 +166,9 @@ export async function probeServer(p: ServerProfile): Promise<string> {
 }
 const [user, setUser] = createSignal<User | null>(null);
 export { user };
+/** Set when the saved server did not answer at start-up (e.g. a LAN address from outside): Login offers the others. */
+const [unreachable, setUnreachable] = createSignal<string | null>(null);
+export { unreachable };
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -242,11 +245,18 @@ export async function restore(): Promise<boolean> {
   if (!p) return false;
   await useServer(p).catch(() => {});
   if (!token || !server()) return false;
+  setUnreachable(null);
+  // An unreachable address can hang for a minute or more: give up after 8 s.
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), 8000);
   try {
-    setUser(await api<User>("/me"));
+    setUser(await api<User>("/me", { signal: stop.signal }));
     return true;
-  } catch {
+  } catch (e) {
+    if (!(e instanceof ApiError)) setUnreachable(`Cannot reach ${p.name}. Check the network or pick another server.`);
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
