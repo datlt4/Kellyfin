@@ -18,6 +18,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : TauriActivity() {
   private var lastBack = 0L
+  /** Set by the player (src/native.ts) while a video plays: leaving the app or locking the screen keeps the sound. */
+  @Volatile var keepPlaying = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
@@ -51,7 +53,13 @@ class MainActivity : TauriActivity() {
     })
   }
 
-  // Device controls for the player (src/native.ts): fullscreen.
+  override fun onPause() {
+    super.onPause()
+    // WryActivity pauses the WebView, which stops its media: undo that while something plays.
+    if (keepPlaying) findWebView(findViewById(android.R.id.content))?.onResume()
+  }
+
+  // Device controls for the player (src/native.ts): fullscreen, background playback.
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     webView.addJavascriptInterface(NativeBridge(this), "KellyfinNative")
@@ -66,6 +74,11 @@ class MainActivity : TauriActivity() {
 
 /** Called from JavaScript on a binder thread: window changes hop to the UI thread. */
 class NativeBridge(private val activity: MainActivity) {
+  @JavascriptInterface
+  fun setPlaying(on: Boolean) {
+    activity.keepPlaying = on
+  }
+
   /** Hides the system bars and turns landscape regardless of auto-rotate; off restores both. */
   @JavascriptInterface
   fun setFullscreen(on: Boolean) {

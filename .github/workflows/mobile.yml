@@ -103,14 +103,17 @@ jobs:
       - run: npx tauri ios init --ci 2>&1 | tee ios-init.log
       # init uses Tauri's default icons: put the Kellyfin ones in place.
       - run: cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
-      # Servers are often plain http on the LAN or VPN: allow it, and explain local network access.
+      # Servers are often plain http on the LAN or VPN: allow it, and explain local network access; background audio.
       - run: |
           for P in src-tauri/gen/apple/*_iOS/Info.plist; do
             /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string 'Kellyfin streams from your media server on the local network.'" "$P" || true
             /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$P" || true
             /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$P" || true
             /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$P" || true
-            /usr/libexec/PlistBuddy -c "Print" "$P" | grep -E "NSLocalNetwork|NSAllows"
+            # Keep a video's or podcast's sound when the app goes to the background or the screen locks.
+            /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$P" || true
+            /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string audio" "$P" || true
+            /usr/libexec/PlistBuddy -c "Print" "$P" | grep -E "NSLocalNetwork|NSAllows|audio"
           done
       # Xcode's "Build Rust Code" phase only works while `tauri ios build` runs (it needs code
       # signing), so build the Rust static lib here and turn that phase into a no-op.

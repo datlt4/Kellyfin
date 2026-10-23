@@ -1,7 +1,7 @@
 import { useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import Icon from "../components/Icon";
-import { nativeFullscreen, setFullscreen } from "../native";
+import { nativeFullscreen, setFullscreen, setPlaying as keepPlaying } from "../native";
 import { airplay, castAvailable, castDevice, castLoad, castSeek, castToggle, initCast, remotePaused, remoteTime, requestCast, stopCast } from "../cast";
 import { api, authToken, fmtClock, img, mediaUrl, server, streamLabel, subLabel, type ItemDetail } from "../api";
 import {
@@ -508,6 +508,7 @@ function PlayerView(props: { id: string }) {
       clearInterval(nextTimer);
       hls?.destroy();
       if (nativeFs()) setFullscreen(false);
+      keepPlaying(false);
       video.removeAttribute("src");
       video.load(); // stops the download / server-side remux
     });
@@ -546,8 +547,8 @@ function PlayerView(props: { id: string }) {
         playsinline
         preload="auto"
         poster={item() ? img(item()!, "l") : undefined}
-        onPlay={() => { setPlaying(true); poke(); }}
-        onPause={() => { setPlaying(false); setUi(true); report(); }}
+        onPlay={() => { setPlaying(true); keepPlaying(true); poke(); }}
+        onPause={() => { setPlaying(false); keepPlaying(false); setUi(true); report(); }}
         onWaiting={() => {
           // The playlist's last segment can promise a few ms more than the encode holds; iOS then waits forever.
           if (duration() - now() < 2) {

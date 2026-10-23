@@ -3,6 +3,7 @@ import { isTauri } from "./api";
 
 type Bridge = {
   setFullscreen(on: boolean): void;
+  setPlaying?(on: boolean): void; // absent in apps older than 2.1.0
 };
 
 const android = (window as unknown as { KellyfinNative?: Bridge }).KellyfinNative;
@@ -16,6 +17,9 @@ export function setFullscreen(on: boolean) {
   if (android) android.setFullscreen(on);
   else if (linuxApp) import("@tauri-apps/api/window").then((w) => w.getCurrentWindow().setFullscreen(on)).catch(() => {});
 }
+
+/** Android app: keep the sound when the app goes to the background or the screen locks. */
+export const setPlaying = (on: boolean) => android?.setPlaying?.(on);
 
 // The Android app already pads the WebView by the system bars: the page must not add CSS safe areas on top.
 if (android) {
