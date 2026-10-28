@@ -213,8 +213,8 @@ cd server && cargo run                                 # server on :8080 (needs 
 npm run tauri dev                                      # desktop app
 ```
 
-Every push to `dev` and `main` is built and tested by GitHub Actions and pushes the Docker image; merging into
-`main` publishes the version in `package.json` as a release with all apps. How everything works, the reasons
+Every push to `main` is built and tested by GitHub Actions and pushes the Docker image; a push that bumps the
+version publishes the version in `package.json` as a release with all apps. How everything works, the reasons
 behind it and the open items are in [docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## License

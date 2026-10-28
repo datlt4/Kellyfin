@@ -1,9 +1,9 @@
 name: build
 
-# dev -> :dev, main -> :latest (Docker Hub hienanh/kellyfin). Desktop/mobile releases come with the release workflow.
+# main -> :latest and :<version> (Docker Hub hienanh/kellyfin). Desktop/mobile releases come with the release workflow.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -92,9 +92,8 @@ jobs:
         run: |
           V=$(node -p "require('../package.json').version")
           I=hienanh/kellyfin
-          if [ "$GITHUB_REF_NAME" = main ]; then T="-t $I:latest -t $I:$V"; else T="-t $I:dev -t $I:$V-dev"; fi
-          docker buildx imagetools create $T $(printf "$I@sha256:%s " *)
-          docker buildx imagetools inspect "$I:$([ "$GITHUB_REF_NAME" = main ] && echo latest || echo dev)"
+          docker buildx imagetools create -t $I:latest -t $I:$V $(printf "$I@sha256:%s " *)
+          docker buildx imagetools inspect $I:latest
 
   # GPU worker for the experimental AI upscaling (runs on an NVIDIA PC, so amd64 only).
   upscaler:
@@ -112,7 +111,7 @@ jobs:
         run: |
           V=$(node -p "require('./package.json').version")
           I=hienanh/kellyfin-upscaler
-          if [ "$GITHUB_REF_NAME" = main ]; then echo "t=$I:latest,$I:$V" >> "$GITHUB_OUTPUT"; else echo "t=$I:dev,$I:$V-dev" >> "$GITHUB_OUTPUT"; fi
+          echo "t=$I:latest,$I:$V" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: upscaler

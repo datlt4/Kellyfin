@@ -64,6 +64,14 @@ function PlayerView(props: { id: string }) {
   const [ui, setUi] = createSignal(true);
   const [error, setError] = createSignal("");
   const [upNext, setUpNext] = createSignal<number | null>(null);
+  // Next episode starts by itself at the end unless turned off in the settings menu (remembered).
+  const [autoNext, setAutoNext] = createSignal(localStorage.getItem("autoNext") !== "0");
+  const toggleAutoNext = () => {
+    setAutoNext(!autoNext());
+    try {
+      localStorage.setItem("autoNext", autoNext() ? "1" : "0");
+    } catch {}
+  };
   const [quality, setQuality] = createSignal<Quality>("orig");
   const [levelP, setLevelP] = createSignal<number | null>(null); // rendition hls.js is playing
   let hls: HlsT | null = null;
@@ -232,7 +240,8 @@ function PlayerView(props: { id: string }) {
     // A remembered height the file does not have falls back to adaptive.
     setQuality(typeof q === "number" && !qualities(it).includes(q) ? "auto" : q);
     setMode(modeFor(it, a, quality()));
-    const start = sp.t !== undefined ? Number(sp.t) : it.played ? 0 : it.position;
+    // A watched video being watched again resumes too (finishing it resets the position to 0).
+    const start = sp.t !== undefined ? Number(sp.t) : it.position;
     load(start > 5 ? start : 0);
     if ("mediaSession" in navigator) {
       const art = img(it, "m");
@@ -519,7 +528,7 @@ function PlayerView(props: { id: string }) {
     if (upNext() !== null) return; // both the end-of-stream stall and "ended" fired
     report();
     const next = item()?.next_id;
-    if (!next) return;
+    if (!next || !autoNext()) return;
     setUpNext(5);
     nextTimer = window.setInterval(() => {
       const n = upNext()! - 1;
@@ -658,6 +667,11 @@ function PlayerView(props: { id: string }) {
                   {opts().title}
                 </div>
                 <Show when={m() === "quality"}>
+                  <button class="p-menu-item" onClick={toggleAutoNext}>
+                    <span class="check">{autoNext() ? <Icon name="check" size={18} /> : null}</span>
+                    <span class="grow">Auto-play next</span>
+                    <span class="muted">{autoNext() ? "On" : "Off"}</span>
+                  </button>
                   <button class="p-menu-item" onClick={() => setMenu("speed")}>
                     <span class="check" />
                     <span class="grow">Playback speed</span>

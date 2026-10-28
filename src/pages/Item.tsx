@@ -24,7 +24,7 @@ export default function Item() {
     if (fromStart) q.set("t", "0");
     return `/play/${item()!.id}?${q}`;
   };
-  const resumable = () => !!item() && !item()!.played && item()!.position > 5;
+  const resumable = () => !!item() && item()!.position > 5;
 
   async function rename() {
     const t = prompt("Title (empty = use the file name)", item()!.title);

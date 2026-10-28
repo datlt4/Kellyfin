@@ -190,7 +190,7 @@ async fn latest_rows(st: &AppState, user: i64, offset: i64, limit: i64) -> ApiRe
 async fn home(State(st): State<AppState>, user: User) -> ApiResult<Json<Home>> {
     let libraries = sqlx::query_as(&format!("{LIB_CARD} ORDER BY l.sort_name")).fetch_all(&st.db).await?;
     let resume = sqlx::query_as(&format!(
-        "{CARD} WHERE u.position > 0 AND u.played = 0 ORDER BY u.last_played DESC LIMIT 24"
+        "{CARD} WHERE u.position > 0 ORDER BY u.last_played DESC LIMIT 24"
     ))
     .bind(user.id)
     .fetch_all(&st.db)

@@ -1,6 +1,6 @@
 # Kellyfin — handoff
 
-State on 2026-10-20, version **2.1.1** (2.0.0: in-app updates, AI upscaling, Jellyfin retired; 2.0.1: iOS settings fixes; 2.0.2: iOS proxy restart after suspension, pull to refresh; 2.0.3: pull gesture no longer cancelled by first-touch jitter; 2.0.4: player swipes removed, no page zoom, "10" in skip icons; 2.0.5: rescans refresh thumbnails of replaced files, scan progress in Libraries, no iOS landscape text inflation; 2.0.6: black bars detected by the scan and cropped in the player and thumbnails; 2.0.7: crop applied as soon as the video size is known, round icon buttons on phones; 2.0.8: no endless spinner at the end of transcoded videos (its release run was cancelled; shipped in 2.0.9); 2.0.9: previous/next around the clock, centre play/±10 s on every screen; 2.0.10: several transcodes per video, hand-drawn volume slider, desktop icon with a margin; 2.0.11: the Linux app plays HEVC itself instead of a transcode; 2.0.12: Linux fullscreen without the WebKitGTK crash, hand-drawn volume bar, reload in the desktop apps; 2.1.0: start-up timeout for unreachable servers, exact seek bar, Alt/Option+P, mouse-leave fade; 2.1.1: sound keeps playing in the background on phones). 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
+State on 2026-10-29, version **2.1.2** (2.0.0: in-app updates, AI upscaling, Jellyfin retired; 2.0.1: iOS settings fixes; 2.0.2: iOS proxy restart after suspension, pull to refresh; 2.0.3: pull gesture no longer cancelled by first-touch jitter; 2.0.4: player swipes removed, no page zoom, "10" in skip icons; 2.0.5: rescans refresh thumbnails of replaced files, scan progress in Libraries, no iOS landscape text inflation; 2.0.6: black bars detected by the scan and cropped in the player and thumbnails; 2.0.7: crop applied as soon as the video size is known, round icon buttons on phones; 2.0.8: no endless spinner at the end of transcoded videos (its release run was cancelled; shipped in 2.0.9); 2.0.9: previous/next around the clock, centre play/±10 s on every screen; 2.0.10: several transcodes per video, hand-drawn volume slider, desktop icon with a margin; 2.0.11: the Linux app plays HEVC itself instead of a transcode; 2.0.12: Linux fullscreen without the WebKitGTK crash, hand-drawn volume bar, reload in the desktop apps; 2.1.0: start-up timeout for unreachable servers, exact seek bar, Alt/Option+P, mouse-leave fade; 2.1.1: sound keeps playing in the background on phones; 2.1.2: auto-play next switch, watched videos resume and show in Continue). Since 2.1.2 there is only `main` (the `dev` branch was deleted at the owner's request): every change is committed to `main`. 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
 `release.yml` (branch `release/v1.0.0`, tag `v1.0.0`, GitHub release with desktop and mobile builds).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
@@ -47,7 +47,7 @@ A self-hosted replacement for Jellyfin, written from scratch:
 
 On the mini PC:
 
-- Compose project: `/home/mini/Software/kellyfin/` (`docker-compose.yml` + `.env` with `KELLYFIN_TAG=dev`).
+- Compose project: `/home/mini/Software/kellyfin/` (`docker-compose.yml` + `.env` with `KELLYFIN_TAG=latest`).
 - Data (SQLite DB, images, transcode scratch): `/mnt/das_8tb/kellyfin_volume/data`.
 - Jellyfin export used for the migration: `/mnt/das_8tb/kellyfin_volume/jellyfin-export/`.
 - Kellyfin listens on **:8024** (→ container :8080). Jellyfin was retired on 2026-10-20: container, image,
@@ -325,12 +325,12 @@ cast, untested with a real receiver (none was found on the mini PC's LAN).
 
 SemVer: a minor per feature set, a patch per fix — **every shipped change bumps it** (owner's rule).
 1.0.0 was the first release (0.x was development). Use `scripts/set-version.sh X.Y.Z`; it updates `package.json`, both `Cargo.toml`/`Cargo.lock`,
-`tauri.conf.json`. Images: Docker Hub `hienanh/kellyfin` (`:dev` + `:X.Y.Z-dev` from dev, `:latest` + `:X.Y.Z` from main).
+`tauri.conf.json`. Images: Docker Hub `hienanh/kellyfin` (`:latest` + `:X.Y.Z` from main; the old `:dev` tags are no longer updated).
 
 ### CI is the build system
 
 GitHub Actions builds everything (it was briefly disabled during an Actions outage on 2026-10-19 and is back on):
-- `build.yml` — every push to `dev`/`main`: web build, server tests, Tauri tests, multi-arch image
+- `build.yml` — every push to `main` (and pull requests): web build, server tests, Tauri tests, multi-arch image
   (amd64 and arm64 on native runners, merged into one manifest) pushed to `hienanh/kellyfin`.
 - `release.yml` — push to `main`: if `v<package.json version>` has no tag yet, creates `release/vX.Y.Z`, the tag,
   desktop installers (Linux x64/arm64, Windows x64/x86/arm64, macOS arm64/x64), and calls `mobile.yml`.
@@ -346,8 +346,8 @@ Local fallback only if Actions is unavailable (the owner prefers CI — ask firs
 docker run --rm -u $(id -u):$(id -g) -e CARGO_HOME=/cargo -v <cache>:/cargo -v $PWD/server:/src -w /src rust:1-bookworm cargo test
 
 # Server image -> mini PC (no Docker Hub push)
-docker build -f server/Dockerfile -t hienanh/kellyfin:dev .
-docker save hienanh/kellyfin:dev | gzip -1 | ssh mini-wg 'gunzip | docker load && cd ~/Software/kellyfin && docker compose up -d'
+docker build -f server/Dockerfile -t hienanh/kellyfin:latest .
+docker save hienanh/kellyfin:latest | gzip -1 | ssh mini-wg 'gunzip | docker load && cd ~/Software/kellyfin && docker compose up -d'
 
 # Mobile, on mabu (repo clone: ~/Downloads/Miscellaneous/Kellyfin)
 scripts/build-mobile.sh android   # signed APK -> dist-mobile/ (verified: builds)
@@ -429,7 +429,8 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
 | `80e2f07` | 2.0.0 | in-app updates (signed desktop updater, APK link, iOS notice), AI upscale pipeline + worker, back button on the server picker, Jellyfin retired | Drive the updater from Rust commands (no extra webview permissions); the upscale worker pulls work so the GPU PC needs no inbound access. Released: 34 assets incl. 13 `.sig` and `latest.json` covering all 20 desktop platform keys; A8 Star updated 1.5.0 → 2.0.0. |
 | `b408b45` | 2.0.1 | iOS: Settings → Libraries rows blank, "AI upscale" tab wrapped | Safari 17 sized a grid row ~17000px because an `img` with `height: 100%` sat in an `aspect-ratio` grid item (content drawn far below, the visible row empty); the image is now absolutely positioned. Tabs `nowrap`. Android did not show either. Released (34 assets, CI green). |
-| (next) | 2.1.1 | background playback: Android `MainActivity.onPause` resumes the WebView again while the player says it is playing (`KellyfinNative.setPlaying`); iOS Info.plist gets `UIBackgroundModes: audio` (PlistBuddy step in `mobile.yml`) | `WryActivity.onPause()` calls `WebView.onPause()`, which stops media. Not verified on devices yet; iOS WebKit may still pause a `<video>` (not an `<audio>`) when the screen locks, in which case PiP is the fallback. The music feature was dropped by the owner. |
+| (next) | 2.1.2 | "Auto-play next" switch in the player's settings menu (`localStorage.autoNext`); a watched video resumes where it was left and is listed in Continue Watching (the ✓ stays; finishing resets the position); `dev` branch removed, CI and the mini PC use `main` / `:latest` | Before, `played` made the player start at 0 and hid the item from Continue even though the server kept saving its position. |
+| `1dc437b` | 2.1.1 | background playback: Android `MainActivity.onPause` resumes the WebView again while the player says it is playing (`KellyfinNative.setPlaying`); iOS Info.plist gets `UIBackgroundModes: audio` (PlistBuddy step in `mobile.yml`) | `WryActivity.onPause()` calls `WebView.onPause()`, which stops media. Not verified on devices yet; iOS WebKit may still pause a `<video>` (not an `<audio>`) when the screen locks, in which case PiP is the fallback. The music feature was dropped by the owner. Released (34 assets). |
 | `664e803` | 2.1.0 | `restore()` gives up on `/me` after 8 s and Login says the server is unreachable (pick another, e.g. the VPN one); seek bar drawn by hand with a 28 px hit area, thicker + thumb on hover; Alt+P / Option+P = picture-in-picture (`e.code`, a Mac types π); controls fade 1 s after the mouse leaves and stay while hovered | A LAN server opened from outside hung on the splash forever (no fetch timeout). The invisible range input over the seek bar mapped clicks with its thumb inset, so the fill stopped tens of px short in WebKitGTK. Touch auto-hide stays at 3 s (the owner asked for 5 s unless already lower). |
 | `f4876dc` | 2.0.12 | Linux app fullscreen = Tauri window fullscreen (`core:window:allow-set-fullscreen`), Esc leaves it; volume bar is plain divs with pointer capture; F5 / Ctrl+R / Cmd+R and "Reload" in the avatar menu | `requestFullscreen` made WebKitGTK 2.50 abort the UI process (SIGABRT inside libwebkit2gtk, from `/var/crash/_usr_bin_kellyfin.1000.crash`). A styled `<input type=range>` still renders differently in WebKitGTK (thick track, thumb short of the end). Released (34 assets). |
 | `d8e0c07` | 2.0.11 | `appleWebKit` needs a Mac/iOS UA, so WebKitGTK (Linux app) gets direct play / remux | Only the Linux app lagged on Athena: its UA has `AppleWebKit` without `Chrome`, so the Apple rules (no remux, no hev1) sent every HEVC file to a 1080p VAAPI transcode that the mini PC's CPU HEVC decode can barely keep at real time. GStreamer on koi-pc decodes the same stream at ~600 fps (`avdec_h265`). Released (34 assets). |
