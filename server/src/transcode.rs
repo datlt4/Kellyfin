@@ -230,7 +230,10 @@ impl Transcoder {
             .arg(format!("file:{}", src.path))
             .args(["-map", "0:v:0"]);
         if v.audio >= 0 {
-            cmd.args(["-map", &format!("0:{}", v.audio), "-c:a", "aac", "-ac", "2", "-b:a", "160k"]);
+            // A track shorter than the video (e.g. a dub) would leave the last segments without sound and the
+            // player waiting for it: pad with silence up to the video's end, emitted as the video advances.
+            cmd.args(["-map", &format!("0:{}", v.audio), "-af", "apad", "-c:a", "aac", "-ac", "2", "-b:a", "160k"])
+                .args(["-shortest", "-max_interleave_delta", "0"]);
         }
         match hw {
             Some(Hw::Vaapi(_)) => cmd.args([
