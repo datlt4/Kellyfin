@@ -63,6 +63,8 @@ Kellyfin was written to fix what hurt in daily Jellyfin use on a small home serv
 - The apps check for new versions: desktop apps update themselves (signed), Android opens the new APK.
 - **AI upscaling (experimental)**: GPU workers turn low-resolution videos into 1080p copies, chosen per library
   or episode, that appear as an extra quality in the player.
+- **Narration (thuyết minh)**: subtitles in the spoken language (Whisper), translated into English, Vietnamese and
+  Chinese, read out by a voice and mixed over the original sound — an extra audio track; the files stay untouched.
 
 ## Screenshots
 
@@ -181,6 +183,17 @@ KELLYFIN_URL=http://<server>:8024 KELLYFIN_UPSCALER_TOKEN=<token from Settings �
 Then queue a library in **Settings → AI upscale**, or one episode with **AI upscale** on its page. Models: `lanczos`
 (a plain resize, to try the pipeline), `realesrgan-anime` when `realesrgan-ncnn-vulkan` is installed, and your own
 trained models as `upscaler/models/<name>.sh` scripts (see the README there).
+
+## Narration (thuyết minh)
+
+Needs the film-sub services (Whisper, Argos/LibreTranslate, VieNeu-TTS behind one nginx) on a GPU machine, plus the
+`kellyfin-narrator` worker (`narrator/`, image `hienanh/kellyfin-narrator`) next to them. Set the film-sub URL in
+**Settings → Narration**, press **Check server**, put the worker token in film-sub's `.env`
+(`KELLYFIN_NARRATOR_TOKEN=…`) and start it with `docker compose up -d kellyfin-narrator`. Then queue a library there
+(spoken language: detect, or pick one) or one video with **Narration** on its page. Per video: subtitles in the spoken
+language (the video's own, else Whisper) → English, Vietnamese and Chinese subtitles (Argos) → Vietnamese voice
+(VieNeu) and Chinese voice (edge-tts, needs Internet) → mixed over the ducked original sound. The results live in
+Kellyfin's data folder and show up as extra subtitle and audio tracks.
 
 ## Command line
 

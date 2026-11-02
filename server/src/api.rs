@@ -1,7 +1,7 @@
 use crate::{
     auth::{self, Admin, User},
     error::{ApiError, ApiResult},
-    admin, recommend, repair, scan, settings, stream, transcode, upscale, AppState,
+    admin, narration, recommend, repair, scan, settings, stream, transcode, upscale, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -48,6 +48,12 @@ pub fn router(st: AppState) -> Router {
         .route("/admin/upscale/token", post(upscale::new_token))
         .route("/admin/upscale/jobs", post(upscale::queue))
         .route("/admin/upscale/jobs/{id}", delete(upscale::delete_job))
+        .route("/admin/narration", get(narration::overview))
+        .route("/admin/narration/config", put(narration::save_config))
+        .route("/admin/narration/check", get(narration::check))
+        .route("/admin/narration/token", post(narration::new_token))
+        .route("/admin/narration/jobs", post(narration::queue))
+        .route("/admin/narration/jobs/{id}", delete(narration::delete_job))
         .route("/admin/restart", post(admin::restart))
         .route("/admin/shutdown", post(admin::shutdown))
         .route("/admin/export", get(admin::export))
@@ -77,6 +83,14 @@ pub fn router(st: AppState) -> Router {
         .route("/upscaler/jobs/{id}/progress", post(upscale::progress))
         .route("/upscaler/jobs/{id}/fail", post(upscale::fail))
         .route("/upscaler/jobs/{id}/result", put(upscale::result).layer(DefaultBodyLimit::disable()))
+        // Narration worker (narrator/, next to the film-sub services).
+        .route("/narrator/claim", post(narration::claim))
+        .route("/narrator/jobs/{id}/audio", get(narration::audio))
+        .route("/narrator/jobs/{id}/subtitle/{key}", get(narration::subtitle))
+        .route("/narrator/jobs/{id}/progress", post(narration::progress))
+        .route("/narrator/jobs/{id}/fail", post(narration::fail))
+        .route("/narrator/jobs/{id}/files/{name}", put(narration::upload).layer(DefaultBodyLimit::disable()))
+        .route("/narrator/jobs/{id}/done", post(narration::done))
         .route("/items/{id}/hls/{p}/{audio}/{file}", get(transcode::hls_file));
     let api = api.merge(media).layer(CorsLayer::permissive());
 
@@ -299,6 +313,11 @@ async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> Ap
     })
     .await
     .map_err(anyhow::Error::from)?;
+    // Narrations made for this video: extra audio tracks and the subtitles they came from.
+    if let Some(a) = d.streams.as_array_mut() {
+        a.extend(narration::extra_streams(&st.cfg.data, d.card.id));
+    }
+    d.subtitles.extend(narration::extra_subs(&st.cfg.data, d.card.id));
     // Neighbours in library order, for prev/next episode.
     let sibling = |cmp: &str, dir: &str| {
         format!("SELECT id FROM items WHERE library_id = ? AND (sort_title, id) {cmp} (?, ?) ORDER BY sort_title {dir}, id {dir} LIMIT 1")

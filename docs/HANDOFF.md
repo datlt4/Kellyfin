@@ -1,6 +1,6 @@
 # Kellyfin — handoff
 
-State on 2026-10-30, version **2.1.3** (2.0.0: in-app updates, AI upscaling, Jellyfin retired; 2.0.1: iOS settings fixes; 2.0.2: iOS proxy restart after suspension, pull to refresh; 2.0.3: pull gesture no longer cancelled by first-touch jitter; 2.0.4: player swipes removed, no page zoom, "10" in skip icons; 2.0.5: rescans refresh thumbnails of replaced files, scan progress in Libraries, no iOS landscape text inflation; 2.0.6: black bars detected by the scan and cropped in the player and thumbnails; 2.0.7: crop applied as soon as the video size is known, round icon buttons on phones; 2.0.8: no endless spinner at the end of transcoded videos (its release run was cancelled; shipped in 2.0.9); 2.0.9: previous/next around the clock, centre play/±10 s on every screen; 2.0.10: several transcodes per video, hand-drawn volume slider, desktop icon with a margin; 2.0.11: the Linux app plays HEVC itself instead of a transcode; 2.0.12: Linux fullscreen without the WebKitGTK crash, hand-drawn volume bar, reload in the desktop apps; 2.1.0: start-up timeout for unreachable servers, exact seek bar, Alt/Option+P, mouse-leave fade; 2.1.1: sound keeps playing in the background on phones; 2.1.2: auto-play next switch, watched videos resume and show in Continue; 2.1.3: no spinner at the end when the audio track is shorter than the video). Since 2.1.2 there is only `main` (the `dev` branch was deleted at the owner's request): every change is committed to `main`. 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
+State on 2026-11-03, version **2.2.0** (2.0.0: in-app updates, AI upscaling, Jellyfin retired; 2.0.1: iOS settings fixes; 2.0.2: iOS proxy restart after suspension, pull to refresh; 2.0.3: pull gesture no longer cancelled by first-touch jitter; 2.0.4: player swipes removed, no page zoom, "10" in skip icons; 2.0.5: rescans refresh thumbnails of replaced files, scan progress in Libraries, no iOS landscape text inflation; 2.0.6: black bars detected by the scan and cropped in the player and thumbnails; 2.0.7: crop applied as soon as the video size is known, round icon buttons on phones; 2.0.8: no endless spinner at the end of transcoded videos (its release run was cancelled; shipped in 2.0.9); 2.0.9: previous/next around the clock, centre play/±10 s on every screen; 2.0.10: several transcodes per video, hand-drawn volume slider, desktop icon with a margin; 2.0.11: the Linux app plays HEVC itself instead of a transcode; 2.0.12: Linux fullscreen without the WebKitGTK crash, hand-drawn volume bar, reload in the desktop apps; 2.1.0: start-up timeout for unreachable servers, exact seek bar, Alt/Option+P, mouse-leave fade; 2.1.1: sound keeps playing in the background on phones; 2.1.2: auto-play next switch, watched videos resume and show in Continue; 2.1.3: no spinner at the end when the audio track is shorter than the video; 2.2.0: narration (thuyết minh) pipeline with a film-sub worker). Since 2.1.2 there is only `main` (the `dev` branch was deleted at the owner's request): every change is committed to `main`. 1.0.0 was the first release: `dev` was fast-forwarded into `main`, which runs
 `release.yml` (branch `release/v1.0.0`, tag `v1.0.0`, GitHub release with desktop and mobile builds).
 This file is updated with every change (owner's rule): keep it that way.
 Read this before touching the code: it explains how the pieces fit, why they are built the way they are
@@ -89,6 +89,7 @@ server/                 Rust server (binary `kellyfin`)
   src/jellyfin.rs       read-only export from a Jellyfin server into that format
   src/settings.rs       key/value settings (transcode.hwaccel, transcode.device)
   src/upscale.rs        AI upscale job queue, worker API, upscaled versions
+  src/narration.rs      narration (thuyết minh) job queue, worker API, extra audio/subtitle tracks (§9)
   Dockerfile            web build + server build + Debian runtime (ffmpeg, mesa VAAPI)
   docker-compose.yml    the mini PC deployment
 src/                    SolidJS client
@@ -101,6 +102,7 @@ src/                    SolidJS client
   components/           TopBar, Row (shelf), Card, Icon (SVG), FolderPicker
 src-tauri/              Tauri shell; src/proxy.rs = local header-adding proxy, src/update.rs = updates
 upscaler/               experimental GPU upscale worker (Python + ffmpeg), Dockerfile, GPU compose, models/
+narrator/               narration worker (Python: requests, numpy, edge-tts + ffmpeg), Dockerfile; runs in film-sub's compose
   android/apply.sh      patches the generated Android project (cleartext http, gradle repos)
 scripts/
   set-version.sh        sets the version in every manifest and lockfile
@@ -429,6 +431,7 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 | `7b2e64e` | 0.8.0 | playback speed 0.25–2× | A src change resets `playbackRate` to `defaultPlaybackRate`: set both. |
 | `80e2f07` | 2.0.0 | in-app updates (signed desktop updater, APK link, iOS notice), AI upscale pipeline + worker, back button on the server picker, Jellyfin retired | Drive the updater from Rust commands (no extra webview permissions); the upscale worker pulls work so the GPU PC needs no inbound access. Released: 34 assets incl. 13 `.sig` and `latest.json` covering all 20 desktop platform keys; A8 Star updated 1.5.0 → 2.0.0. |
 | `b408b45` | 2.0.1 | iOS: Settings → Libraries rows blank, "AI upscale" tab wrapped | Safari 17 sized a grid row ~17000px because an `img` with `height: 100%` sat in an `aspect-ratio` grid item (content drawn far below, the visible row empty); the image is now absolutely positioned. Tabs `nowrap`. Android did not show either. Released (34 assets, CI green). |
+| (next) | 2.2.0 | narration: `narration.rs` + migration `0006_narration`, worker `narrator/` (image `hienanh/kellyfin-narrator`) as service `kellyfin-narrator` of the film-sub compose, Settings → Narration (URL, voices, server check, queue with stages), "Narration" on a video's page; remux/HLS take a narration track as a second input | See §9. The owner chose: never touch the video files; the worker lives in the film-sub compose; Chinese voice = edge-tts. |
 | `917a7f6` | 2.1.3 | HLS transcode pads audio with `apad` + `-shortest` + `-max_interleave_delta 0` | Energon E05–E08: the Vietnamese dub (audio 2) ends ~55 s before the video (E06: 1227 s vs 1282.8 s), so segments after it had no audio packets and the player stalled ~40 s before the end, walking the quality down to 144p. `apad` alone emits all the silence at EOF into the last segment; `-max_interleave_delta 0` makes it follow the video. Verified by counting audio packets per segment on the mini PC. Released (34 assets). |
 | `2bf3628` | 2.1.2 | "Auto-play next" switch in the player's settings menu (`localStorage.autoNext`); a watched video resumes where it was left and is listed in Continue Watching (the ✓ stays; finishing resets the position); `dev` branch removed, CI and the mini PC use `main` / `:latest` | Before, `played` made the player start at 0 and hid the item from Continue even though the server kept saving its position. Released (34 assets); the mini PC now pulls `:latest`. |
 | `1dc437b` | 2.1.1 | background playback: Android `MainActivity.onPause` resumes the WebView again while the player says it is playing (`KellyfinNative.setPlaying`); iOS Info.plist gets `UIBackgroundModes: audio` (PlistBuddy step in `mobile.yml`) | `WryActivity.onPause()` calls `WebView.onPause()`, which stops media. Not verified on devices yet; iOS WebKit may still pause a `<video>` (not an `<audio>`) when the screen locks, in which case PiP is the fallback. The music feature was dropped by the owner. Released (34 assets). |
@@ -469,3 +472,32 @@ on the RTX 3060 in 13 s, uploaded over WireGuard, played as "AI · lanczos").
   with the NVIDIA GPU): models `lanczos` (stub), `realesrgan-anime` when `realesrgan-ncnn-vulkan` is on PATH, and
   any `models/<name>.sh` (`INPUT OUTPUT TARGET_HEIGHT` → MP4) — that is where trained models go.
 - Not done: live (per-HLS-segment) upscaling; per-library default model; worker not running permanently anywhere.
+
+## 9. Narration (thuyết minh)
+
+Turns a video into one with a Vietnamese and/or Chinese voice-over, the way the owner did by hand for Transformers:
+Energon (method notes: `/mnt/das_8tb/metube_volume/NOTE_pipeline_sub_dich_tts_mux.md`, scripts in that folder).
+
+- **Where things run**: the film-sub stack on koi-pc (`/mnt/ssd_1tb/Downloads-Ubuntu/Miscellaneous/film-sub`,
+  `http://192.168.0.182:8080`: `/whisper/`, `/translate/` (LibreTranslate/Argos), `/gradio_api/` (two VieNeu-TTS
+  instances, sticky cookie), `/ocr/`) now also has the `kellyfin-narrator` service (`FILMSUB_URL=http://nginx`,
+  token in that folder's `.env`). It only makes outgoing requests, like the AI upscale worker. Kellyfin's server
+  stores the film-sub URL (`narration.url`) and voices, and checks the services (`GET /api/admin/narration/check`:
+  Whisper health, Argos languages incl. en/vi/zh, VieNeu voices) before anything is queued.
+- **Stages** (`narration_jobs.stage`, shown as chips in the queue): 1 subtitles in the spoken language — the video's
+  own text subtitles, else Whisper (`language` = the chosen code or `auto`; with `auto`, Argos `/detect` names the
+  language from the text, since the Whisper service does not say); 2 translation into en, vi, zh (Argos, 6 parallel
+  requests per file; a target the video already has is reused); 3 voice: VieNeu `wrapper_2` (SRT upload, keep timing,
+  wav) for vi, edge-tts per cue placed on a 48 kHz timeline with numpy for zh (needs Internet); 4 mux: the voice over
+  the original sound with `sidechaincompress` ducking + `amix normalize=0`, AAC 128k, as long as the original.
+- **Results** (`data/narration/<item>/`): `<lang>.srt` for subtitles the worker made (not ones the video already had)
+  and `vi.m4a` / `zh.m4a`. The item API lists them as subtitle keys `n<lang>` and as virtual audio streams 1001 (vi)
+  / 1002 (zh); `remux` and the HLS transcode add the m4a as a second input (`-ss` on both, map `1:a:0`). So direct
+  play is not possible with a narration track: browsers get a remux, Apple devices an HLS transcode.
+- **Tested** before 2.2.0 on a 60 s Energon clip, in the worker image against film-sub: Whisper `auto` + Argos
+  detect (en, 5.6 s), translation vi/zh (~1 s each), VieNeu (7.6 s), edge-tts (3.1 s), mix lengths = original.
+  The old mux graph cut the narration at the last spoken cue (`sidechaincompress` ends with its shorter input —
+  why Energon's vie tracks are ~55 s short); the voice is now `apad`ded first.
+- **Not done / unverified**: no job through Kellyfin itself yet (queue → claim → upload → playback); OCR of burned-in subtitles (the note's §2b) is not part of it; deleting an item leaves its
+  `data/narration` folder behind (same as upscaled files).
+

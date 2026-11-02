@@ -1,6 +1,6 @@
 import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, Show } from "solid-js";
-import { api, fmtClock, fmtDuration, fmtRes, img, streamLabel, subLabel, upload, user, type ItemDetail, type Related, type UpscaleOverview } from "../api";
+import { api, checkNarration, fmtClock, fmtDuration, fmtRes, img, streamLabel, subLabel, upload, user, type ItemDetail, type Related, type UpscaleOverview } from "../api";
 import { ItemCard, LibCard } from "../components/Card";
 import Row from "../components/Row";
 import Icon from "../components/Icon";
@@ -55,6 +55,15 @@ export default function Item() {
     if (!m) return;
     await api("/admin/upscale/jobs", { method: "POST", body: JSON.stringify({ model: m, item_ids: [item()!.id] }) });
     alert(`Queued with ${m}. Progress: Settings → AI upscale.`);
+  }
+
+  // Subtitles in the spoken language -> en / vi / zh -> Vietnamese and Chinese voice over the original sound.
+  async function narrate() {
+    const src = prompt("Spoken language of this video: auto (detect), en, ko, ja, zh, de, fr, es…", "auto");
+    if (src === null) return;
+    await checkNarration();
+    await api("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [item()!.id], source: src.trim() || "auto", langs: ["vi", "zh"] }) });
+    alert("Queued. Progress: Settings → Narration.");
   }
 
   async function autoImage() {
@@ -121,6 +130,7 @@ export default function Item() {
                 <button class="btn small" onClick={changeImage}>Change image</button>
                 <button class="btn small" onClick={autoImage} title="Grab a frame from the video">Auto image</button>
                 <button class="btn small" onClick={() => aiUpscale().catch((e) => alert(e.message))}>AI upscale</button>
+                <button class="btn small" onClick={() => narrate().catch((e) => alert(e.message))}>Narration</button>
               </div>
               <p class="path">{it().path}</p>
             </Show>

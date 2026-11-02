@@ -75,6 +75,8 @@ pub async fn remux(State(st): State<AppState>, _u: User, Path(id): Path<i64>, Qu
     let (path, video_codec, streams): (String, Option<String>, Option<String>) =
         sqlx::query_as("SELECT path, video_codec, streams FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
     let streams: Vec<Value> = streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    // A narration track lives in its own AAC file next to the data, not in the video.
+    let narration = q.audio.and_then(|i| crate::narration::audio_file(&st.cfg.data, id, i));
     let audio = match q.audio {
         Some(i) => streams.iter().find(|s| s["index"] == i && s["type"] == "audio"),
         None => streams.iter().find(|s| s["type"] == "audio"),
@@ -82,14 +84,24 @@ pub async fn remux(State(st): State<AppState>, _u: User, Path(id): Path<i64>, Qu
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-v", "error", "-nostdin"]);
-    if q.start > 0.0 {
-        cmd.args(["-ss", &format!("{:.3}", q.start)]);
+    let ss = (q.start > 0.0).then(|| format!("{:.3}", q.start));
+    if let Some(t) = &ss {
+        cmd.args(["-ss", t]);
     }
-    cmd.arg("-i").arg(format!("file:{path}")).args(["-map", "0:v:0", "-c:v", "copy"]);
+    cmd.arg("-i").arg(format!("file:{path}"));
+    if let Some(n) = &narration {
+        if let Some(t) = &ss {
+            cmd.args(["-ss", t]);
+        }
+        cmd.arg("-i").arg(format!("file:{}", n.display()));
+    }
+    cmd.args(["-map", "0:v:0", "-c:v", "copy"]);
     if video_codec.as_deref() == Some("hevc") {
         cmd.args(["-tag:v", "hvc1"]); // Safari only plays hvc1-tagged HEVC
     }
-    if let Some(a) = audio {
+    if narration.is_some() {
+        cmd.args(["-map", "1:a:0", "-c:a", "copy"]);
+    } else if let Some(a) = audio {
         cmd.args(["-map", &format!("0:{}", a["index"])]);
         if a["codec"] == "aac" || q.copy_audio {
             cmd.args(["-c:a", "copy"]);
@@ -223,21 +235,29 @@ pub fn subtitle_tracks(path: &str, streams: &Value) -> Vec<SubTrack> {
     out
 }
 
-/// WebVTT for one subtitle track. Embedded tracks are cached since extracting reads the whole file.
-pub async fn subtitle(State(st): State<AppState>, _u: User, Path((id, key)): Path<(i64, String)>) -> ApiResult<Response> {
-    let path = item_path(&st, id).await?;
-    let key = key.trim_end_matches(".vtt");
+/// Input file, ffmpeg map and (embedded tracks) WebVTT cache path of a subtitle key:
+/// "x<n>" external file, "e<index>" embedded track, "n<lang>" made by the narration worker.
+pub async fn subtitle_source(st: &AppState, id: i64, key: &str) -> ApiResult<(String, String, Option<std::path::PathBuf>)> {
+    let path = item_path(st, id).await?;
     let not_found = || ApiError::new(StatusCode::NOT_FOUND, "no such subtitle");
-    let (input, map, cache) = if let Some(n) = key.strip_prefix('x') {
+    if let Some(n) = key.strip_prefix('x') {
         let n: usize = n.parse().map_err(|_| not_found())?;
         let p = tokio::task::spawn_blocking(move || external_subs(&path)).await.map_err(anyhow::Error::from)?;
-        (p.into_iter().nth(n).ok_or_else(not_found)?.0.to_string_lossy().into_owned(), "0:s:0".to_owned(), None)
+        Ok((p.into_iter().nth(n).ok_or_else(not_found)?.0.to_string_lossy().into_owned(), "0:s:0".to_owned(), None))
     } else if let Some(i) = key.strip_prefix('e') {
         let i: i64 = i.parse().map_err(|_| not_found())?;
-        (path, format!("0:{i}"), Some(st.cfg.data.join("subs").join(id.to_string()).join(format!("{i}.vtt"))))
+        Ok((path, format!("0:{i}"), Some(st.cfg.data.join("subs").join(id.to_string()).join(format!("{i}.vtt")))))
+    } else if let Some(lang) = key.strip_prefix('n') {
+        let f = crate::narration::sub_file(&st.cfg.data, id, lang).ok_or_else(not_found)?;
+        Ok((f.to_string_lossy().into_owned(), "0:s:0".to_owned(), None))
     } else {
-        return Err(not_found());
-    };
+        Err(not_found())
+    }
+}
+
+/// WebVTT for one subtitle track. Embedded tracks are cached since extracting reads the whole file.
+pub async fn subtitle(State(st): State<AppState>, _u: User, Path((id, key)): Path<(i64, String)>) -> ApiResult<Response> {
+    let (input, map, cache) = subtitle_source(&st, id, key.trim_end_matches(".vtt")).await?;
     if let Some(c) = &cache {
         if let Ok(v) = tokio::fs::read(c).await {
             return Ok(vtt(v));

@@ -72,6 +72,17 @@ export type UpscaleOverview = {
     progress: number; error: string | null; worker: string | null; height: number | null; updated_at: number;
   }[];
 };
+export type NarrationConfig = { url: string; voice_vi: string; voice_zh: string };
+export type NarrationOverview = {
+  config: NarrationConfig;
+  token: string;
+  workers: { name: string; seen_secs_ago: number }[];
+  jobs: {
+    id: number; item_id: number; title: string; library: string; source: string; langs: string; status: string;
+    stage: number; step: string | null; progress: number; error: string | null; worker: string | null; updated_at: number;
+  }[];
+};
+export type NarrationCheck = { checks: { name: string; ok: boolean; detail: string }[]; voices: string[] };
 export type ScanStatus = { running: boolean; phase: string; done: number; total: number; error: string | null; finished_at: number | null };
 
 export const isTauri = "__TAURI_INTERNALS__" in window;
@@ -311,4 +322,12 @@ export function fmtRes(h: number | null, w: number | null) {
   if (!h || !w) return "";
   const p = Math.min(h, w);
   return p >= 2000 ? "4K" : `${p}p`;
+}
+
+/** Checks the film-sub services; throws with the failing ones so nothing is queued against a dead server. */
+export async function checkNarration(): Promise<NarrationCheck> {
+  const c = await api<NarrationCheck>("/admin/narration/check");
+  const bad = c.checks.filter((x) => !x.ok);
+  if (bad.length) throw new Error(`film-sub server not ready: ${bad.map((x) => `${x.name}: ${x.detail}`).join("; ")}`);
+  return c;
 }

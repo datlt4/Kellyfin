@@ -1,8 +1,8 @@
 import { A, useParams } from "@solidjs/router";
-import { createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
+import { createEffect, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
 import {
   activeServer, api, ApiError, appVersion, fmtClock, img, isTauri, refreshUser, serverVersion, upload, user,
-  type Info, type Lib, type LibRow, type ScanStatus, type UpscaleOverview, type UserRow,
+  checkNarration, type Info, type Lib, type LibRow, type NarrationCheck, type NarrationConfig, type NarrationOverview, type ScanStatus, type UpscaleOverview, type UserRow,
 } from "../api";
 import FolderPicker from "../components/FolderPicker";
 import { applyUpdate, checkUpdate, updateAvailable, updateProgress } from "../update";
@@ -587,6 +587,170 @@ function Upscale() {
   );
 }
 
+// ---------- Narration (thuyết minh) ----------
+
+const NARRATION_LANGS = [{ code: "vi", label: "Vietnamese" }, { code: "zh", label: "Chinese" }];
+/** Spoken languages Whisper hears well (Argos must also have a model for it to translate). */
+export const SPOKEN = [
+  ["auto", "Detect"], ["en", "English"], ["ko", "Korean"], ["ja", "Japanese"], ["zh", "Chinese"], ["de", "German"],
+  ["fr", "French"], ["es", "Spanish"], ["it", "Italian"], ["pt", "Portuguese"], ["ru", "Russian"], ["th", "Thai"],
+  ["id", "Indonesian"], ["ms", "Malay"], ["vi", "Vietnamese"],
+];
+const STAGES = ["Subtitles", "Translate en · vi · zh", "Voice (TTS)", "Mux"];
+
+function Stages(props: { status: string; stage: number }) {
+  const state = (i: number) =>
+    props.status === "done" || i + 1 < props.stage ? "done" : i + 1 === props.stage ? (props.status === "failed" ? "failed" : props.status === "running" ? "now" : "") : "";
+  return (
+    <div class="stages">
+      <For each={STAGES}>{(s, i) => <span class={state(i())}>{s}</span>}</For>
+    </div>
+  );
+}
+
+function Narration() {
+  const [ov, { refetch }] = createResource(() => api<NarrationOverview>("/admin/narration"));
+  const [libs] = createResource(() => api<Lib[]>("/libraries"));
+  const [cfg, setCfg] = createSignal<NarrationConfig>({ url: "", voice_vi: "", voice_zh: "" });
+  createEffect(on(() => ov()?.config, (c) => c && setCfg(c), { defer: false }));
+  const [check, setCheck] = createSignal<NarrationCheck | null>(null);
+  const [lib, setLib] = createSignal("");
+  const [source, setSource] = createSignal("auto");
+  const [langs, setLangs] = createSignal<string[]>(["vi", "zh"]);
+  const act = useAction();
+  const timer = setInterval(() => refetch(), 4000);
+  onCleanup(() => clearInterval(timer));
+  const set = (k: keyof NarrationConfig, v: string) => setCfg({ ...cfg(), [k]: v });
+  const save = (e: Event) => {
+    e.preventDefault();
+    act.run(async () => { await api("/admin/narration/config", { method: "PUT", body: JSON.stringify(cfg()) }); refetch(); }, "Saved");
+  };
+  const runCheck = () =>
+    act.run(async () => {
+      setCheck(null);
+      setCheck(await api<NarrationCheck>("/admin/narration/check"));
+    });
+  const toggleLang = (code: string) => setLangs(langs().includes(code) ? langs().filter((l) => l !== code) : [...langs(), code]);
+  const queue = (e: Event) => {
+    e.preventDefault();
+    act.run(async () => {
+      setCheck(await checkNarration());
+      const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: Number(lib()), source: source(), langs: langs() }) });
+      refetch();
+      return n;
+    }, "Queued");
+  };
+  const snippet = () =>
+    `KELLYFIN_URL=${location.origin} KELLYFIN_NARRATOR_TOKEN=${ov()?.token ?? "…"} docker compose up -d kellyfin-narrator`;
+  return (
+    <>
+      <form class="panel form" onSubmit={save}>
+        <h2>Narration <span class="tag">thuyết minh</span></h2>
+        <p class="muted">
+          A worker next to the film-sub services makes English subtitles (Whisper) when a video has none, translates them
+          (Argos), reads them out (VieNeu for Vietnamese, edge-tts for Chinese) and mixes the voice over the original sound.
+          The result becomes an extra audio track and subtitles; the video files are never changed.
+        </p>
+        <label>film-sub server URL
+          <input value={cfg().url} onInput={(e) => set("url", e.currentTarget.value)} placeholder="http://192.168.0.182:8080" inputmode="url" autocapitalize="off" />
+        </label>
+        <label>Vietnamese voice (VieNeu)
+          <input value={cfg().voice_vi} onInput={(e) => set("voice_vi", e.currentTarget.value)} list="vieneu-voices" />
+          <datalist id="vieneu-voices"><For each={check()?.voices}>{(v) => <option value={v} />}</For></datalist>
+        </label>
+        <label>Chinese voice (edge-tts)
+          <input value={cfg().voice_zh} onInput={(e) => set("voice_zh", e.currentTarget.value)} placeholder="zh-CN-XiaoxiaoNeural" />
+        </label>
+        <div class="row-btns">
+          <button class="btn primary">Save</button>
+          <button type="button" class="btn" onClick={runCheck} disabled={!ov()?.config.url}>Check server</button>
+        </div>
+        <Show when={check()}>
+          {(c) => (
+            <For each={c().checks}>
+              {(x) => <p class={x.ok ? "ok" : "error"}>{x.ok ? "✓" : "✗"} {x.name} <span class="muted small">· {x.detail.slice(0, 160)}</span></p>}
+            </For>
+          )}
+        </Show>
+        <act.Note />
+      </form>
+      <section class="panel">
+        <h2>Worker</h2>
+        <p class="muted">
+          It runs as the <code>kellyfin-narrator</code> service of the film-sub compose (or <code>narrator/</code> on its own)
+          and only connects out. In the film-sub folder:
+        </p>
+        <pre class="snippet">{snippet()}</pre>
+        <div class="row-btns">
+          <button class="btn small" onClick={() => { if (confirm("New token? The running worker stops until restarted with it.")) act.run(async () => { await api("/admin/narration/token", { method: "POST" }); refetch(); }); }}>New token</button>
+        </div>
+        <h3 class="sub-title">Workers online</h3>
+        <For each={ov()?.workers} fallback={<p class="muted">No worker has checked in during the last 2 minutes.</p>}>
+          {(w) => <p><b>{w.name}</b> <span class="muted">· {w.seen_secs_ago}s ago</span></p>}
+        </For>
+      </section>
+      <form class="panel form" onSubmit={queue}>
+        <h2>Narrate a library</h2>
+        <label>Library
+          <select value={lib()} onChange={(e) => setLib(e.currentTarget.value)}>
+            <option value="">Choose…</option>
+            <For each={libs()}>{(l) => <option value={l.id}>{l.name} ({l.count})</option>}</For>
+          </select>
+        </label>
+        <label>Spoken language
+          <select value={source()} onChange={(e) => setSource(e.currentTarget.value)}>
+            <For each={SPOKEN}>{([v, l]) => <option value={v}>{l}</option>}</For>
+          </select>
+        </label>
+        <span class="muted small">Narration (voice) in:</span>
+        <div class="row-btns">
+          <For each={NARRATION_LANGS}>
+            {(l) => (
+              <label class="check"><input type="checkbox" checked={langs().includes(l.code)} onChange={() => toggleLang(l.code)} /> {l.label}</label>
+            )}
+          </For>
+        </div>
+        <button class="btn primary" disabled={!lib() || !langs().length}>Check server and queue</button>
+        <p class="muted small">
+          Each video: subtitles in the spoken language (its own, else Whisper) → translated into English, Vietnamese and
+          Chinese (Argos) → read out → muxed over the original sound. Single videos: the “Narration” button on a video's page.
+        </p>
+      </form>
+      <section class="panel">
+        <h2>Queue</h2>
+        <p class="muted small">
+          {(ov()?.jobs ?? []).filter((j) => j.status === "running").length} processing ·{" "}
+          {(ov()?.jobs ?? []).filter((j) => j.status === "queued").length} waiting ·{" "}
+          {(ov()?.jobs ?? []).filter((j) => j.status === "done").length} done ·{" "}
+          {(ov()?.jobs ?? []).filter((j) => j.status === "failed").length} failed
+        </p>
+        <For each={ov()?.jobs} fallback={<p class="muted">No jobs yet.</p>}>
+          {(j) => (
+            <div class="suspect" classList={{ running: j.status === "running" }}>
+              <div>
+                <A href={`/item/${j.item_id}`}>{j.title}</A>
+                <div class="muted small">
+                  {j.library} · {j.source === "auto" ? "spoken: detect" : `spoken: ${j.source}`} · voice {j.langs} · {j.status}
+                  {j.status === "running" ? ` ${Math.round(j.progress * 100)}% on ${j.worker}` : ""}
+                </div>
+                <Show when={j.status !== "queued"}><Stages status={j.status} stage={j.stage} /></Show>
+                <Show when={j.status === "running" && j.step}><div class="small">{j.step}</div></Show>
+                <Show when={j.error}><div class="error small">{j.error!.slice(0, 300)}</div></Show>
+              </div>
+              <div class="row-btns">
+                <Show when={j.status === "failed"}>
+                  <button class="btn small" onClick={() => act.run(async () => { await checkNarration(); await api("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [j.item_id], source: j.source, langs: j.langs.split(",") }) }); refetch(); })}>Retry</button>
+                </Show>
+                <button class="btn small danger" onClick={() => { if (confirm(`Delete this job and the narration made for "${j.title}"?`)) act.run(async () => { await api(`/admin/narration/jobs/${j.id}`, { method: "DELETE" }); refetch(); }); }}>Delete</button>
+              </div>
+            </div>
+          )}
+        </For>
+      </section>
+    </>
+  );
+}
+
 const TABS = [
   { id: "profile", label: "Profile", admin: false, view: Profile },
   { id: "dashboard", label: "Dashboard", admin: true, view: Dashboard },
@@ -594,6 +758,7 @@ const TABS = [
   { id: "libraries", label: "Libraries", admin: true, view: Libraries },
   { id: "playback", label: "Playback", admin: true, view: Playback },
   { id: "upscale", label: "AI upscale", admin: true, view: Upscale },
+  { id: "narration", label: "Narration", admin: true, view: Narration },
 ];
 
 export default function Settings() {
