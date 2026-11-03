@@ -803,6 +803,25 @@ pub async fn delete_preset(State(st): State<AppState>, _a: Admin, Path(id): Path
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub struct Clear {
+    /// "done" or "failed".
+    status: String,
+}
+
+/// Tidies the queue: removes the finished (or the failed) jobs; what was muxed into the videos stays.
+pub async fn clear(State(st): State<AppState>, _a: Admin, Json(c): Json<Clear>) -> ApiResult<Json<u64>> {
+    if !matches!(c.status.as_str(), "done" | "failed") {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "clear done or failed jobs"));
+    }
+    let items: Vec<i64> =
+        sqlx::query_scalar("DELETE FROM narration_jobs WHERE status = ? RETURNING item_id").bind(&c.status).fetch_all(&st.db).await?;
+    for item in &items {
+        let _ = tokio::fs::remove_dir_all(dir(&st.cfg.data, *item)).await; // a failed job's leftover uploads
+    }
+    Ok(Json(items.len() as u64))
+}
+
 /// A failed job runs again with the pipeline it was queued with.
 pub async fn retry(State(st): State<AppState>, _a: Admin, Path(id): Path<i64>) -> ApiResult<StatusCode> {
     sqlx::query(

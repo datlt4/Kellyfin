@@ -702,8 +702,10 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
 .sel-opt.on { color: var(--accent-2); font-weight: 600; }
 .sel-opt.off { opacity: 0.4; pointer-events: none; }
 .sel-empty { padding: 8px 10px; }
-.pipe-also { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: center; }
-.pipe-also label.check { display: inline-flex; flex-direction: row; align-items: center; font-size: 12px; gap: 4px; }
-.pipe-body .pipe-also input { width: auto; padding: 0; }
+.pipe-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.pipe-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--line); font-size: 11px; }
+.pipe-tag.main { border-color: var(--accent-2); color: var(--accent-2); }
+.pipe-tag button { border: 0; background: none; color: var(--muted); font-size: 13px; line-height: 1; padding: 0 2px; }
 .pipe.full { position: fixed; inset: 0; z-index: 900; background: var(--bg); padding: 12px; display: flex; flex-direction: column; }
 .pipe.full .pipe-board { flex: 1; max-height: none; }

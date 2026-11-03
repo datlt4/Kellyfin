@@ -105,6 +105,7 @@ pub fn validate(g: &Graph, langs: &[&str]) -> Result<Summary, String> {
         let lang_ok = langs.contains(&n.lang.as_str());
         match n.kind.as_str() {
             "whisper" if !(n.lang == "auto" || lang_ok) => return Err(format!("Whisper: unknown language {:?}", n.lang)),
+            "ocr" if n.lang.is_empty() => return Err("OCR: pick at least one language".into()),
             "ocr" if !OCR_LANGS.contains(&n.lang.as_str()) || n.also.iter().any(|l| !OCR_LANGS.contains(&l.as_str())) => {
                 return Err(format!("OCR reads {} only", OCR_LANGS.join(", ")))
             }

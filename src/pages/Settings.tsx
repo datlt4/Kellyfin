@@ -773,7 +773,19 @@ function Narration() {
         <p class="muted small">Single videos: the “Narration” button on a video's page; a whole library: also on its page.</p>
       </form>
       <section class="panel">
-        <h2>Queue</h2>
+        <div class="panel-head">
+          <h2>Queue</h2>
+          <For each={[["done", "Clear finished"], ["failed", "Clear failed"]] as const}>
+            {([status, label]) => (
+              <Show when={(ov()?.jobs ?? []).some((j) => j.status === status)}>
+                <button type="button" class="btn small" onClick={() => act.run(async () => {
+                  await api("/admin/narration/jobs/clear", { method: "POST", body: JSON.stringify({ status }) });
+                  refetch();
+                })}>{label}</button>
+              </Show>
+            )}
+          </For>
+        </div>
         <p class="muted small">
           {(ov()?.jobs ?? []).filter((j) => j.status === "running").length} on the GPU ·{" "}
           {(ov()?.jobs ?? []).filter((j) => j.status === "muxing").length} muxing ·{" "}

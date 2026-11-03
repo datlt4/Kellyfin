@@ -307,6 +307,11 @@ def tts_edge(cues, voice, duration, dest, tmp, on_progress):
                 return
             except Exception:
                 await asyncio.sleep(3 * attempt)
+        # A failed save can leave a partial file behind: it must not reach the timeline.
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
         raise JobError(f"edge-tts failed on: {text[:40]}")
 
     probe = os.path.join(tmp, "probe.mp3")
@@ -341,15 +346,38 @@ def tts_edge(cues, voice, duration, dest, tmp, on_progress):
         log(f"edge-tts skipped {len(failed)} lines: {[t[:30] for t in failed]}")
     # Every cue on one 48 kHz stereo timeline as long as the video.
     buf = np.zeros(int((duration + 1) * SR) * 2, dtype=np.int32)
-    for i, (start, _, _) in enumerate(cues):
-        if not os.path.isfile(os.path.join(voice_dir, f"{i:05}.mp3")):
+    def decode(mp3):
+        r = subprocess.run(["ffmpeg", "-v", "error", "-i", mp3, "-f", "s16le", "-ac", "2", "-ar", str(SR), "-"],
+                           capture_output=True)
+        return r.stdout if r.returncode == 0 else b""
+
+    # A truncated mp3 (the stream broke off) is made again once; still bad, the line stays silent.
+    redo = [(i, c[2]) for i, c in enumerate(cues) if os.path.isfile(os.path.join(voice_dir, f"{i:05}.mp3"))
+            and not decode(os.path.join(voice_dir, f"{i:05}.mp3"))]
+    if redo:
+        log(f"edge-tts: {len(redo)} truncated lines, making them again")
+
+        async def again():
+            await asyncio.gather(*(synth(t, os.path.join(voice_dir, f"{i:05}.mp3")) for i, t in redo), return_exceptions=True)
+
+        asyncio.run(again())
+    unreadable = []
+    for i, (start, _, text) in enumerate(cues):
+        mp3 = os.path.join(voice_dir, f"{i:05}.mp3")
+        if not os.path.isfile(mp3):
             continue
-        pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", os.path.join(voice_dir, f"{i:05}.mp3"), "-f", "s16le",
-                              "-ac", "2", "-ar", str(SR), "-"], capture_output=True, check=True).stdout
+        pcm = decode(mp3)
+        if not pcm:
+            unreadable.append(text)
+            continue
         a = np.frombuffer(pcm[: len(pcm) // 4 * 4], dtype=np.int16).astype(np.int32)
         off = int(start * SR) * 2
         n = max(0, min(len(a), len(buf) - off))
         buf[off: off + n] += a[:n]
+    if unreadable:
+        log(f"edge-tts audio unreadable for {len(unreadable)} lines (left silent): {[t[:30] for t in unreadable]}")
+        if len(failed) + len(unreadable) > max(3, len(todo) // 10):
+            raise JobError(f"edge-tts gave no usable audio for {len(failed) + len(unreadable)} of {len(todo)} lines")
     pcm = np.clip(buf, -32767, 32767).astype(np.int16).tobytes()
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "s16le", "-ac", "2", "-ar", str(SR), "-i", "-", dest],
                    input=pcm, check=True)

@@ -103,7 +103,8 @@ export default function PipelineEditor(props: {
   function add(type: PipeNode["type"]) {
     let i = 1;
     while (byId(`${type}${i}`)) i++;
-    const lang = type === "whisper" ? "auto" : type === "ocr" || type === "subtitle" || type === "translate" ? "vi" : undefined;
+    // OCR starts with no language: the picture decides (a pipeline with none does not save).
+    const lang = type === "whisper" ? "auto" : type === "ocr" ? "" : type === "subtitle" || type === "translate" ? "vi" : undefined;
     const n: PipeNode = { id: `${type}${i}`, type, lang, x: 40 + (g().nodes.length % 5) * 30, y: 30 + (g().nodes.length % 5) * 30 };
     if (type === "voice") n.engine = "edge";
     if (type === "ocr") n.crop = 0.35;
@@ -120,12 +121,14 @@ export default function PipelineEditor(props: {
     h: Math.max(340, ...g().nodes.map((n) => n.y + 180)),
   });
 
-  const langSelect = (n: PipeNode, auto = false, only?: string[]) => (
+  const langSelect = (n: PipeNode, auto = false) => (
     <Select value={n.lang ?? ""} disabled={ro()} onChange={(v) => patch(n.id, { lang: v })} options={[
       ...(auto ? [{ value: "auto", label: "Detect the language" }] : []),
-      ...PIPE_LANGS.filter(([c]) => !only || only.includes(c)).map(([c, l]) => ({ value: c, label: l })),
+      ...PIPE_LANGS.map(([c, l]) => ({ value: c, label: l })),
     ]} />
   );
+  const ocrLangs = (n: PipeNode) => [n.lang ?? "", ...(n.also ?? [])].filter(Boolean);
+  const setOcrLangs = (id: string, list: string[]) => patch(id, { lang: list[0] ?? "", also: list.slice(1) });
   const edgeFor = (n: PipeNode) => {
     const l = inputLang(n.id);
     return (props.edgeVoices ?? []).filter((v) => !l || v.startsWith(`${l}-`));
@@ -177,19 +180,23 @@ export default function PipelineEditor(props: {
                   <Show when={n().type === "whisper"}>{langSelect(n(), true)}</Show>
                   <Show when={n().type === "subtitle" || n().type === "translate"}>{langSelect(n())}</Show>
                   <Show when={n().type === "ocr"}>
-                    {langSelect(n(), false, OCR_LANGS)}
-                    <div class="pipe-also">
-                      <span class="muted">Also read:</span>
-                      <For each={OCR_LANGS.filter((l) => l !== n().lang)}>
-                        {(l) => (
-                          <label class="check">
-                            <input type="checkbox" disabled={ro()} checked={(n().also ?? []).includes(l)}
-                              onChange={(e) => patch(n().id, { also: e.currentTarget.checked ? [...(n().also ?? []), l] : (n().also ?? []).filter((x) => x !== l) })} />
-                            {langName(l)}
-                          </label>
+                    {/* Tags: every language read in the picture; the first is the subtitles' language. */}
+                    <div class="pipe-tags">
+                      <For each={ocrLangs(n())} fallback={<span class="muted small">No language yet</span>}>
+                        {(l, i) => (
+                          <span class="pipe-tag" classList={{ main: i() === 0 }} title={i() === 0 ? "The subtitles are in this language" : "Also read"}>
+                            {langName(l)}{i() === 0 ? " · subtitles" : ""}
+                            <Show when={!ro()}>
+                              <button type="button" onClick={() => setOcrLangs(n().id, ocrLangs(n()).filter((x) => x !== l))} aria-label={`Remove ${langName(l)}`}>×</button>
+                            </Show>
+                          </span>
                         )}
                       </For>
                     </div>
+                    <Show when={!ro() && ocrLangs(n()).length < OCR_LANGS.length}>
+                      <Select value="" placeholder="+ Add language" onChange={(v) => setOcrLangs(n().id, [...ocrLangs(n()), v])}
+                        options={OCR_LANGS.filter((l) => !ocrLangs(n()).includes(l)).map((l) => ({ value: l, label: langName(l) }))} />
+                    </Show>
                     <label class="pipe-inline">
                       Bottom
                       <input type="number" min="5" max="80" step="5" value={Math.round((n().crop ?? 0.35) * 100)} disabled={ro()}

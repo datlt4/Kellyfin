@@ -54,6 +54,7 @@ pub fn router(st: AppState) -> Router {
         .route("/admin/narration/jobs", post(narration::queue))
         .route("/admin/narration/jobs/{id}", delete(narration::delete_job))
         .route("/admin/narration/jobs/{id}/retry", post(narration::retry))
+        .route("/admin/narration/jobs/clear", post(narration::clear))
         .route("/admin/narration/presets", get(narration::presets).post(narration::create_preset))
         .route("/admin/narration/presets/{id}", put(narration::update_preset).delete(narration::delete_preset))
         .route("/admin/restart", post(admin::restart))
