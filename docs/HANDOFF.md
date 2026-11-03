@@ -390,7 +390,8 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 ## 6. Open items
 
 0. **Next round (owner's request, 2026-11-03)**: full-screen mode for the narration pipeline canvas
-   (`PipelineEditor.tsx`); maybe an edge-tts voice picker per language instead of the free-text voice field.
+   (`PipelineEditor.tsx`); OCR node with several languages at once (vi + en: burned-in Vietnamese subtitles mix in
+   English) and only EasyOCR's languages (vi, en, zh, ja, ko); maybe an edge-tts voice picker per language.
 1. **Run the repair on the server** (Dashboard → Check → Fix): 6 wrong Jumong items; review the 39 others.
 1b. Start an upscale worker permanently on koi-pc (`upscaler/docker-compose.yml`) when
     trained models exist.
