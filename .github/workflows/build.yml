@@ -16,6 +16,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      # A released migration must never change: sqlx refuses to start when an applied one's checksum differs.
+      - name: Released migrations unchanged
+        run: |
+          # Each file is compared with the first release that shipped it.
+          for f in server/migrations/*.sql; do
+            c=$(git log --diff-filter=A --format=%H -- "$f" | tail -1)
+            t=$(git tag --contains "$c" --list 'v*' --sort=v:refname | head -1)
+            if [ -n "$t" ] && ! git diff --quiet "$t" HEAD -- "$f"; then
+              echo "::error::$f differs from $t: add a new migration instead"; bad=1
+            fi
+          done
+          exit ${bad:-0}
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
