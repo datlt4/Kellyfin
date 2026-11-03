@@ -63,9 +63,9 @@ Kellyfin was written to fix what hurt in daily Jellyfin use on a small home serv
 - The apps check for new versions: desktop apps update themselves (signed), Android opens the new APK.
 - **AI upscaling (experimental)**: GPU workers turn low-resolution videos into 1080p copies, chosen per library
   or episode, that appear as an extra quality in the player.
-- **Narration (thuyết minh)**: subtitles in the spoken language (Whisper), translated into English, Vietnamese and
-  Chinese, read out by a voice and mixed over the original sound — added to the video file as extra audio tracks,
-  with the subtitles next to it.
+- **Narration (thuyết minh)**: subtitles from the speech (Whisper) or read off the picture (OCR of burned-in
+  subtitles), translated, read out by a voice and mixed over the original sound — added to the video file as extra
+  audio tracks, with the subtitles next to it. Pipelines are node graphs you can draw and save.
 
 ## Screenshots
 

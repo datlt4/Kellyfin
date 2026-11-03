@@ -1,6 +1,6 @@
 import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
-import { api, checkNarration, fmtDuration, fmtRes, img, user, type Card, type Lib } from "../api";
+import { api, checkNarration, fmtDuration, fmtRes, img, pickPreset, user, type Card, type Lib } from "../api";
 import { ItemCard } from "../components/Card";
 import Icon from "../components/Icon";
 
@@ -80,10 +80,10 @@ export default function Library() {
 
   // Admins: queue every video of this library for narration (Settings → Narration shows the progress).
   async function narrate() {
-    const src = prompt("Spoken language of these videos: auto (detect), en, ko, ja, zh, de, fr, es…", "auto");
-    if (src === null) return;
+    const preset = await pickPreset();
+    if (preset === null) return;
     await checkNarration();
-    const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: lib()!.id, source: src.trim() || "auto", langs: ["vi", "zh"] }) });
+    const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: lib()!.id, preset }) });
     alert(`${n} videos queued. Progress: Settings → Narration.`);
   }
 

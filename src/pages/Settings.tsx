@@ -2,9 +2,10 @@ import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
 import {
   activeServer, api, ApiError, appVersion, fmtClock, img, isTauri, refreshUser, serverVersion, upload, user,
-  checkNarration, type Info, type Lib, type LibRow, type NarrationConfig, type NarrationOverview, type ScanStatus, type UpscaleOverview, type UserRow,
+  checkNarration, type Info, type Lib, type LibRow, type NarrationConfig, type PipeGraph, type Preset, type NarrationOverview, type ScanStatus, type UpscaleOverview, type UserRow,
 } from "../api";
 import FolderPicker from "../components/FolderPicker";
+import PipelineEditor from "../components/PipelineEditor";
 import { applyUpdate, checkUpdate, updateAvailable, updateProgress } from "../update";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -589,14 +590,78 @@ function Upscale() {
 
 // ---------- Narration (thuyết minh) ----------
 
-const NARRATION_LANGS = [{ code: "vi", label: "Vietnamese" }, { code: "zh", label: "Chinese" }];
-/** Spoken languages Whisper hears well (Argos must also have a model for it to translate). */
-export const SPOKEN = [
-  ["auto", "Detect"], ["en", "English"], ["ko", "Korean"], ["ja", "Japanese"], ["zh", "Chinese"], ["de", "German"],
-  ["fr", "French"], ["es", "Spanish"], ["it", "Italian"], ["pt", "Portuguese"], ["ru", "Russian"], ["th", "Thai"],
-  ["id", "Indonesian"], ["ms", "Malay"], ["vi", "Vietnamese"],
-];
-const STAGES = ["Subtitles", "Translate en · vi · zh", "Voice (TTS)", "Mux (Kellyfin server)"];
+const STAGES = ["Subtitles", "Translate", "Voice (TTS)", "Mux (Kellyfin server)"];
+
+/** Built-in and saved pipelines; built-ins are read-only (duplicate them to change them). */
+function Pipelines(props: { voices: string[]; onSaved: () => void }) {
+  const [presets, { refetch }] = createResource(() => api<Preset[]>("/admin/narration/presets"));
+  const [sel, setSel] = createSignal("whisper");
+  const [draft, setDraft] = createSignal<{ name: string; graph: PipeGraph } | null>(null);
+  const current = () => presets()?.find((p) => p.id === sel());
+  createEffect(on([sel, presets], () => {
+    const p = current();
+    if (p) setDraft({ name: p.name, graph: structuredClone(p.graph) });
+  }));
+  const act = useAction();
+  const reload = async (id?: string) => {
+    await refetch();
+    if (id) setSel(id);
+    props.onSaved();
+  };
+  const duplicate = () =>
+    act.run(async () => {
+      const name = prompt("Name of the new pipeline", `${draft()!.name} (copy)`);
+      if (!name) return;
+      const id = await api<string>("/admin/narration/presets", { method: "POST", body: JSON.stringify({ name, graph: draft()!.graph }) });
+      await reload(id);
+    }, "Created");
+  const save = () =>
+    act.run(async () => {
+      await api(`/admin/narration/presets/${sel()}`, { method: "PUT", body: JSON.stringify(draft()) });
+      await reload();
+    }, "Saved");
+  const remove = () => {
+    if (!confirm(`Delete the pipeline "${draft()!.name}"? Queued jobs keep their copy.`)) return;
+    act.run(async () => {
+      await api(`/admin/narration/presets/${sel()}`, { method: "DELETE" });
+      await reload("whisper");
+    });
+  };
+  return (
+    <section class="panel">
+      <h2>Pipelines</h2>
+      <p class="muted small">
+        How a video gets its subtitles and voices. Sources (Whisper, OCR of burned-in subtitles, the video's own) feed
+        translations and voices; voices feed the mux. Drag a node by its title, drag from a node's right dot to another's
+        left dot to wire them, click a wire to remove it. A language the video already has subtitles in is reused.
+      </p>
+      <div class="row-btns">
+        <select value={sel()} onChange={(e) => setSel(e.currentTarget.value)}>
+          <For each={presets()}>{(p) => <option value={p.id}>{p.name}{p.builtin ? " (built-in)" : ""}</option>}</For>
+        </select>
+        <button type="button" class="btn small" onClick={duplicate} disabled={!draft()}>Duplicate</button>
+        <Show when={current() && !current()!.builtin}>
+          <button type="button" class="btn small primary" onClick={save}>Save</button>
+          <button type="button" class="btn small danger" onClick={remove}>Delete</button>
+        </Show>
+      </div>
+      <Show when={current() && !current()!.builtin && draft()}>
+        <label class="pipe-name">Name <input value={draft()!.name} onInput={(e) => setDraft({ ...draft()!, name: e.currentTarget.value })} /></label>
+      </Show>
+      <act.Note />
+      <Show when={draft()}>
+        {(d) => (
+          <PipelineEditor
+            graph={d().graph}
+            voices={props.voices}
+            onChange={current()?.builtin ? undefined : (graph) => setDraft({ ...d(), graph })}
+          />
+        )}
+      </Show>
+      <Show when={current()?.builtin}><p class="muted small">Built-in: press Duplicate to make your own version.</p></Show>
+    </section>
+  );
+}
 const busy = (status: string) => status === "running" || status === "muxing";
 
 function Stages(props: { status: string; stage: number }) {
@@ -622,8 +687,8 @@ function Narration() {
     }
   }));
   const [lib, setLib] = createSignal("");
-  const [source, setSource] = createSignal("auto");
-  const [langs, setLangs] = createSignal<string[]>(["vi", "zh"]);
+  const [presets, { refetch: rePresets }] = createResource(() => api<Preset[]>("/admin/narration/presets"));
+  const [preset, setPreset] = createSignal("whisper");
   const act = useAction();
   const timer = setInterval(() => refetch(), 4000);
   onCleanup(() => clearInterval(timer));
@@ -633,12 +698,11 @@ function Narration() {
     act.run(async () => { await api("/admin/narration/config", { method: "PUT", body: JSON.stringify(cfg()) }); refetch(); }, "Saved");
   };
   const voices = () => [...new Set((ov()?.workers ?? []).flatMap((w) => w.voices))];
-  const toggleLang = (code: string) => setLangs(langs().includes(code) ? langs().filter((l) => l !== code) : [...langs(), code]);
   const queue = (e: Event) => {
     e.preventDefault();
     act.run(async () => {
       await checkNarration();
-      const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: Number(lib()), source: source(), langs: langs() }) });
+      const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: Number(lib()), preset: preset() }) });
       refetch();
       return n;
     }, "Queued");
@@ -698,6 +762,7 @@ function Narration() {
           )}
         </For>
       </section>
+      <Pipelines voices={voices()} onSaved={rePresets} />
       <form class="panel form" onSubmit={queue}>
         <h2>Narrate a library</h2>
         <label>Library
@@ -706,24 +771,13 @@ function Narration() {
             <For each={libs()}>{(l) => <option value={l.id}>{l.name} ({l.count})</option>}</For>
           </select>
         </label>
-        <label>Spoken language
-          <select value={source()} onChange={(e) => setSource(e.currentTarget.value)}>
-            <For each={SPOKEN}>{([v, l]) => <option value={v}>{l}</option>}</For>
+        <label>Pipeline
+          <select value={preset()} onChange={(e) => setPreset(e.currentTarget.value)}>
+            <For each={presets()}>{(p) => <option value={p.id}>{p.name}</option>}</For>
           </select>
         </label>
-        <span class="muted small">Narration (voice) in:</span>
-        <div class="row-btns">
-          <For each={NARRATION_LANGS}>
-            {(l) => (
-              <label class="check"><input type="checkbox" checked={langs().includes(l.code)} onChange={() => toggleLang(l.code)} /> {l.label}</label>
-            )}
-          </For>
-        </div>
-        <button class="btn primary" disabled={!lib() || !langs().length}>Check server and queue</button>
-        <p class="muted small">
-          Each video: subtitles in the spoken language (its own, else Whisper) → translated into English, Vietnamese and
-          Chinese (Argos) → read out → muxed over the original sound. Single videos: the “Narration” button on a video's page.
-        </p>
+        <button class="btn primary" disabled={!lib()}>Check server and queue</button>
+        <p class="muted small">Single videos: the “Narration” button on a video's page; a whole library: also on its page.</p>
       </form>
       <section class="panel">
         <h2>Queue</h2>
@@ -740,7 +794,7 @@ function Narration() {
               <div>
                 <A href={`/item/${j.item_id}`}>{j.title}</A>
                 <div class="muted small">
-                  {j.library} · {j.source === "auto" ? "spoken: detect" : `spoken: ${j.source}`} · voice {j.langs} · {j.status}
+                  {j.library} · {j.preset ?? "Default · Whisper"} · {j.source} · voice {j.langs} · {j.status}
                   {j.status === "running" ? ` ${Math.round(j.progress * 100)}% on ${j.worker}` : ""}
                   {j.status === "muxing" ? " on the Kellyfin server" : ""}
                 </div>
@@ -750,7 +804,7 @@ function Narration() {
               </div>
               <div class="row-btns">
                 <Show when={j.status === "failed"}>
-                  <button class="btn small" onClick={() => act.run(async () => { await checkNarration(); await api("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [j.item_id], source: j.source, langs: j.langs.split(",") }) }); refetch(); })}>Retry</button>
+                  <button class="btn small" onClick={() => act.run(async () => { await checkNarration(); await api(`/admin/narration/jobs/${j.id}/retry`, { method: "POST" }); refetch(); })}>Retry</button>
                 </Show>
                 <button class="btn small danger" onClick={() => { if (confirm(`Delete this job? Tracks and subtitles already added to "${j.title}" stay in its folder.`)) act.run(async () => { await api(`/admin/narration/jobs/${j.id}`, { method: "DELETE" }); refetch(); }); }}>Delete</button>
               </div>

@@ -5,13 +5,15 @@ Gives videos a Vietnamese and/or Chinese voice-over — muxed into the video fil
 the video (`<video>.<lang>.srt`), like the hand-made Transformers: Energon episodes. Kellyfin's media folders must be
 mounted writable.
 
-Per video, in four stages (shown in **Settings → Narration → Queue**):
+Each job runs a **pipeline**, a node graph edited in **Settings → Narration → Pipelines** (built-in: "Default ·
+Whisper" and "Default · OCR"; duplicate one to make your own), in four stages shown in the queue:
 
-1. **Subtitles** in the spoken language — the video's own, else [Whisper](https://github.com/SYSTRAN/faster-whisper)
-   (pick the language when queueing, or let Argos detect it);
-2. **Translation** into English, Vietnamese and Chinese with Argos / LibreTranslate (subtitles the video already has
-   are reused);
-3. **Voice**: VieNeu-TTS reads Vietnamese, edge-tts reads Chinese (edge-tts is a Microsoft service: needs Internet);
+1. **Subtitles**: [Whisper](https://github.com/SYSTRAN/faster-whisper) on the speech (language set, or detected by
+   Argos; lines repeated 60 % alike are merged), **OCR** of subtitles burned into the picture (EasyOCR on the bottom
+   part of the frame, twice a second, read again only when that band changes), or the video's own subtitles;
+2. **Translation** with Argos / LibreTranslate into the languages the graph asks for (subtitles the video already has
+   in a language are reused);
+3. **Voice**: VieNeu-TTS reads Vietnamese, edge-tts any language (edge-tts is a Microsoft service: needs Internet);
 4. **Mux**, on the Kellyfin server: the voice over the original sound, which ducks while the voice speaks. The worker
    hands the voice over and takes the next video meanwhile.
 
@@ -25,7 +27,8 @@ cp .env.example .env    # KELLYFIN_URL, and KELLYFIN_NARRATOR_TOKEN from Kellyfi
 docker compose up -d
 ```
 
-This starts Whisper, Argos, VieNeu (two instances) and EasyOCR behind nginx on port **8080**, plus this worker.
+This starts Whisper, Argos, VieNeu (two instances) and EasyOCR (vi, en, zh, ja, ko) behind nginx on port **8080**,
+plus this worker.
 The worker connects to Kellyfin by itself — Kellyfin needs no address for it — and reports with every poll whether
 each service answers: **Settings → Narration → Workers online** shows ✓/✗ per service. Then queue a library there,
 or one video with **Narration** on its page.

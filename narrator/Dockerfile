@@ -4,7 +4,7 @@ FROM python:3.12-slim-bookworm
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- && pip install --no-cache-dir requests numpy edge-tts
+ && pip install --no-cache-dir requests numpy edge-tts pillow
 WORKDIR /app
 COPY kellyfin_narrator.py ./
 ENV PYTHONUNBUFFERED=1

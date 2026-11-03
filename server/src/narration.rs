@@ -9,7 +9,7 @@
 use crate::{
     auth::Admin,
     error::{ApiError, ApiResult},
-    util, AppState,
+    pipeline, util, AppState,
 };
 use axum::{
     body::Body,
@@ -30,8 +30,23 @@ use std::{
 };
 use tokio::{io::AsyncReadExt, io::AsyncWriteExt, process::Command};
 
-/// Languages a narration can be made in: (code used in file names and the API, ISO 639-2 tag, label).
-const LANGS: &[(&str, &str, &str)] = &[("vi", "vie", "Vietnamese"), ("zh", "zho", "Chinese")];
+/// Languages for subtitles and voices: (code used in file names and the API, ISO 639-2 tag for the track, label).
+const LANGS: &[(&str, &str, &str)] = &[
+    ("en", "eng", "English"),
+    ("vi", "vie", "Vietnamese"),
+    ("zh", "zho", "Chinese"),
+    ("ja", "jpn", "Japanese"),
+    ("ko", "kor", "Korean"),
+    ("de", "deu", "German"),
+    ("fr", "fra", "French"),
+    ("es", "spa", "Spanish"),
+    ("it", "ita", "Italian"),
+    ("pt", "por", "Portuguese"),
+    ("ru", "rus", "Russian"),
+    ("th", "tha", "Thai"),
+    ("id", "ind", "Indonesian"),
+    ("ms", "msa", "Malay"),
+];
 /// A running job not heard from for this long is given to another worker.
 const STALE_SECS: i64 = 900;
 const TOKEN_KEY: &str = "narration.token";
@@ -39,10 +54,8 @@ const VOICE_VI_KEY: &str = "narration.voice_vi";
 const VOICE_ZH_KEY: &str = "narration.voice_zh";
 const DEFAULT_VOICE_VI: &str = "Ngọc Huyền";
 const DEFAULT_VOICE_ZH: &str = "zh-CN-XiaoxiaoNeural";
-/// Subtitle languages a job can make or read (spoken languages Whisper hears well, plus the targets).
+/// The codes of LANGS.
 const SUB_LANGS: &[&str] = &["en", "vi", "zh", "ja", "ko", "de", "fr", "es", "it", "pt", "ru", "th", "id", "ms"];
-/// Every job translates into these.
-const TARGETS: &[&str] = &["en", "vi", "zh"];
 const AF: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
 const DUCK: &str = "sidechaincompress=threshold=0.01:ratio=5:attack=50:release=600";
 
@@ -74,7 +87,7 @@ fn lang_code(lang: &str) -> Option<&'static str> {
     })
 }
 
-/// A file name a worker may upload: `<SUB_LANGS>.srt` or `<narration lang>.voice.flac` (the voice alone).
+/// A file name a worker may upload: `<lang>.srt` or `<lang>.voice.flac` (the voice alone).
 fn upload_ok(name: &str) -> bool {
     match name.rsplit_once('.') {
         Some((l, "srt")) => SUB_LANGS.contains(&l),
@@ -396,12 +409,8 @@ pub struct Claimed {
     item_id: i64,
     title: String,
     duration: Option<f64>,
-    /// Spoken language, or "auto".
-    source: String,
-    /// Subtitles to make by translation (TARGETS).
-    targets: Vec<&'static str>,
-    /// Narration (voice) languages.
-    langs: Vec<String>,
+    /// What to run (pipeline.rs).
+    pipeline: pipeline::Graph,
     /// Text subtitles the video already has, by language code -> key for `subtitle`.
     subs: HashMap<String, String>,
     #[serde(flatten)]
@@ -420,12 +429,12 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
         .bind(now)
         .execute(&st.db)
         .await?;
-    let Some((job_id, item_id, source, langs)): Option<(i64, i64, String, String)> = sqlx::query_as(
+    let Some((job_id, item_id, source, langs, graph)): Option<(i64, i64, String, String, Option<String>)> = sqlx::query_as(
         "UPDATE narration_jobs SET status = 'running', worker = ?1, stage = 0, step = 'starting', progress = 0, error = NULL,
            updated_at = ?2
          WHERE id = (SELECT id FROM narration_jobs
                      WHERE status = 'queued' OR (status = 'running' AND updated_at < ?3) ORDER BY id LIMIT 1)
-         RETURNING id, item_id, source, langs",
+         RETURNING id, item_id, source, langs, pipeline",
     )
     .bind(&worker)
     .bind(now)
@@ -448,9 +457,32 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
         }
     }
     tracing::info!("narration job {job_id} (item {item_id}) -> {worker}");
-    let langs = langs.split(',').map(str::to_owned).collect();
-    Ok(Json(Claimed { job_id, item_id, title, duration, source, targets: TARGETS.to_vec(), langs, subs, config: config(&st).await })
-        .into_response())
+    let pipeline = match graph.and_then(|g| serde_json::from_str(&g).ok()) {
+        Some(g) => g,
+        None => legacy_graph(&source, &langs),
+    };
+    Ok(Json(Claimed { job_id, item_id, title, duration, pipeline, subs, config: config(&st).await }).into_response())
+}
+
+/// Jobs queued before pipelines (2.3.0): the Whisper preset with their spoken language and voices.
+fn legacy_graph(source: &str, langs: &str) -> pipeline::Graph {
+    let (_, _, mut g) = pipeline::builtins().remove(0);
+    let keep: Vec<&str> = langs.split(',').collect();
+    for n in g.nodes.iter_mut().filter(|n| n.kind == "whisper") {
+        n.lang = source.into();
+    }
+    let drop: Vec<String> = [("vvi", "vi"), ("vzh", "zh")].iter().filter(|(_, l)| !keep.contains(l)).map(|(id, _)| (*id).into()).collect();
+    g.nodes.retain(|n| !drop.contains(&n.id));
+    g.edges.retain(|(a, b)| !drop.contains(a) && !drop.contains(b));
+    g
+}
+
+/// The whole video of a claimed job, for OCR of burned-in subtitles (range requests supported).
+pub async fn video(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<i64>, req: axum::extract::Request) -> ApiResult<Response> {
+    worker_auth(&st, &headers).await?;
+    let (_, path, _) = job_item(&st, id).await?;
+    let res = tower::ServiceExt::oneshot(tower_http::services::ServeFile::new(path), req).await.map_err(|e| anyhow::anyhow!(e))?;
+    Ok(res.map(Body::new).into_response())
 }
 
 /// The original sound of a claimed job's video, copied into Matroska (any codec fits).
@@ -587,6 +619,7 @@ pub struct JobRow {
     item_id: i64,
     title: String,
     library: String,
+    preset: Option<String>,
     source: String,
     langs: String,
     status: String,
@@ -608,7 +641,7 @@ pub struct Overview {
 
 pub async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Overview>> {
     let jobs = sqlx::query_as(
-        "SELECT j.id, j.item_id, i.title, l.name AS library, j.source, j.langs, j.status, j.stage, j.step, j.progress, j.error,
+        "SELECT j.id, j.item_id, i.title, l.name AS library, j.preset, j.source, j.langs, j.status, j.stage, j.step, j.progress, j.error,
            j.worker, j.updated_at
          FROM narration_jobs j JOIN items i ON i.id = j.item_id JOIN libraries l ON l.id = i.library_id
          ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'muxing' THEN 0 WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END,
@@ -646,22 +679,30 @@ pub struct Queue {
     #[serde(default)]
     item_ids: Vec<i64>,
     library_id: Option<i64>,
-    /// Spoken language of the videos; "auto" (default) detects it.
+    /// A built-in preset id ("whisper", "ocr") or a saved one's number; default "whisper".
     #[serde(default)]
-    source: Option<String>,
-    langs: Vec<String>,
+    preset: Option<String>,
 }
 
-/// Queues videos (or a whole library); failed jobs are retried, finished ones kept (delete them to redo).
+/// A preset by id: built-in ones by name, saved ones by number. (name, graph)
+async fn preset(st: &AppState, id: &str) -> ApiResult<(String, pipeline::Graph)> {
+    if let Some((_, name, g)) = pipeline::builtins().into_iter().find(|(b, ..)| *b == id) {
+        return Ok((name.into(), g));
+    }
+    let n: i64 = id.parse().map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "unknown pipeline"))?;
+    let (name, graph): (String, String) = sqlx::query_as("SELECT name, graph FROM narration_presets WHERE id = ?")
+        .bind(n)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown pipeline"))?;
+    Ok((name, serde_json::from_str(&graph).map_err(anyhow::Error::from)?))
+}
+
+/// Queues videos (or a whole library) with a pipeline; failed jobs are retried, finished ones kept (delete them to redo).
 pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) -> ApiResult<Json<u64>> {
-    let langs: Vec<&str> = LANGS.iter().map(|l| l.0).filter(|c| q.langs.iter().any(|x| x == c)).collect();
-    if langs.is_empty() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "pick at least one language"));
-    }
-    let source = q.source.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("auto");
-    if source != "auto" && !SUB_LANGS.contains(&source) {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "unknown spoken language"));
-    }
+    let (name, graph) = preset(&st, q.preset.as_deref().unwrap_or("whisper")).await?;
+    let summary = pipeline::validate(&graph, SUB_LANGS).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let graph = serde_json::to_string(&graph).map_err(anyhow::Error::from)?;
     let mut ids = q.item_ids;
     if let Some(lib) = q.library_id {
         ids.extend(sqlx::query_scalar::<_, i64>("SELECT id FROM items WHERE library_id = ? ORDER BY sort_title, id").bind(lib).fetch_all(&st.db).await?);
@@ -670,20 +711,103 @@ pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) 
     let mut added = 0;
     for id in ids {
         added += sqlx::query(
-            "INSERT INTO narration_jobs (item_id, source, langs, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)
-             ON CONFLICT (item_id) DO UPDATE SET status = 'queued', source = excluded.source, langs = excluded.langs, stage = 0,
-               step = NULL, progress = 0, error = NULL, updated_at = excluded.updated_at
+            "INSERT INTO narration_jobs (item_id, source, langs, preset, pipeline, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT (item_id) DO UPDATE SET status = 'queued', source = excluded.source, langs = excluded.langs,
+               preset = excluded.preset, pipeline = excluded.pipeline, stage = 0, step = NULL, progress = 0, error = NULL,
+               updated_at = excluded.updated_at
              WHERE narration_jobs.status = 'failed'",
         )
         .bind(id)
-        .bind(source)
-        .bind(langs.join(","))
+        .bind(&summary.source)
+        .bind(summary.voices.join(","))
+        .bind(&name)
+        .bind(&graph)
         .bind(now)
         .execute(&st.db)
         .await?
         .rows_affected();
     }
     Ok(Json(added))
+}
+
+// ---------- Presets ----------
+
+#[derive(Serialize)]
+pub struct PresetRow {
+    id: String,
+    name: String,
+    builtin: bool,
+    graph: pipeline::Graph,
+}
+
+pub async fn presets(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Vec<PresetRow>>> {
+    let mut out: Vec<PresetRow> =
+        pipeline::builtins().into_iter().map(|(id, name, graph)| PresetRow { id: id.into(), name: name.into(), builtin: true, graph }).collect();
+    let saved: Vec<(i64, String, String)> = sqlx::query_as("SELECT id, name, graph FROM narration_presets ORDER BY name").fetch_all(&st.db).await?;
+    for (id, name, graph) in saved {
+        if let Ok(graph) = serde_json::from_str(&graph) {
+            out.push(PresetRow { id: id.to_string(), name, builtin: false, graph });
+        }
+    }
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub struct PresetBody {
+    name: String,
+    graph: pipeline::Graph,
+}
+
+fn checked(b: &PresetBody) -> ApiResult<(String, String)> {
+    let name = b.name.trim();
+    if name.is_empty() || pipeline::builtins().iter().any(|(_, n, _)| *n == name) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "give the pipeline its own name"));
+    }
+    pipeline::validate(&b.graph, SUB_LANGS).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    Ok((name.to_owned(), serde_json::to_string(&b.graph).map_err(anyhow::Error::from)?))
+}
+
+pub async fn create_preset(State(st): State<AppState>, _a: Admin, Json(b): Json<PresetBody>) -> ApiResult<Json<String>> {
+    let (name, graph) = checked(&b)?;
+    let id: i64 = sqlx::query_scalar("INSERT INTO narration_presets (name, graph, updated_at) VALUES (?, ?, ?) RETURNING id")
+        .bind(name)
+        .bind(graph)
+        .bind(util::now())
+        .fetch_one(&st.db)
+        .await
+        .map_err(|_| ApiError::new(StatusCode::CONFLICT, "a pipeline with that name exists"))?;
+    Ok(Json(id.to_string()))
+}
+
+pub async fn update_preset(State(st): State<AppState>, _a: Admin, Path(id): Path<i64>, Json(b): Json<PresetBody>) -> ApiResult<StatusCode> {
+    let (name, graph) = checked(&b)?;
+    sqlx::query("UPDATE narration_presets SET name = ?, graph = ?, updated_at = ? WHERE id = ?")
+        .bind(name)
+        .bind(graph)
+        .bind(util::now())
+        .bind(id)
+        .execute(&st.db)
+        .await
+        .map_err(|_| ApiError::new(StatusCode::CONFLICT, "a pipeline with that name exists"))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn delete_preset(State(st): State<AppState>, _a: Admin, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    sqlx::query("DELETE FROM narration_presets WHERE id = ?").bind(id).execute(&st.db).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A failed job runs again with the pipeline it was queued with.
+pub async fn retry(State(st): State<AppState>, _a: Admin, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    sqlx::query(
+        "UPDATE narration_jobs SET status = 'queued', stage = 0, step = NULL, progress = 0, error = NULL, updated_at = ?
+         WHERE id = ? AND status = 'failed'",
+    )
+    .bind(util::now())
+    .bind(id)
+    .execute(&st.db)
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Removes the job and its waiting uploads; tracks and subtitles already muxed into the folder stay.
@@ -707,7 +831,8 @@ mod tests {
         assert_eq!(lang_code("kor"), Some("ko"));
         assert_eq!(lang_code("xx"), None);
         assert!(upload_ok("ko.srt") && upload_ok("vi.voice.flac"));
-        assert!(!upload_ok("vi.m4a") && !upload_ok("ko.voice.flac") && !upload_ok("../x.srt") && !upload_ok("vi.wav"));
+        assert!(upload_ok("ko.voice.flac"));
+        assert!(!upload_ok("vi.m4a") && !upload_ok("xx.voice.flac") && !upload_ok("../x.srt") && !upload_ok("vi.wav"));
         let g = mux_graph(1, &[1, 2]);
         assert!(g.starts_with("[0:1]aformat") && g.contains("asplit=2[og1][og2]") && g.ends_with("[n2]"));
         assert_eq!(track_title("Chinese"), "Narration (Chinese)");

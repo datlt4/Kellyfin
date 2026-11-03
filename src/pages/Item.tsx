@@ -1,6 +1,6 @@
 import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, Show } from "solid-js";
-import { api, checkNarration, fmtClock, fmtDuration, fmtRes, img, streamLabel, subLabel, upload, user, type ItemDetail, type Related, type UpscaleOverview } from "../api";
+import { api, checkNarration, fmtClock, pickPreset, fmtDuration, fmtRes, img, streamLabel, subLabel, upload, user, type ItemDetail, type Related, type UpscaleOverview } from "../api";
 import { ItemCard, LibCard } from "../components/Card";
 import Row from "../components/Row";
 import Icon from "../components/Icon";
@@ -57,12 +57,12 @@ export default function Item() {
     alert(`Queued with ${m}. Progress: Settings → AI upscale.`);
   }
 
-  // Subtitles in the spoken language -> en / vi / zh -> Vietnamese and Chinese voice over the original sound.
+  // Queue this video with a narration pipeline (Settings → Narration).
   async function narrate() {
-    const src = prompt("Spoken language of this video: auto (detect), en, ko, ja, zh, de, fr, es…", "auto");
-    if (src === null) return;
+    const preset = await pickPreset();
+    if (preset === null) return;
     await checkNarration();
-    await api("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [item()!.id], source: src.trim() || "auto", langs: ["vi", "zh"] }) });
+    await api("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [item()!.id], preset }) });
     alert("Queued. Progress: Settings → Narration.");
   }
 

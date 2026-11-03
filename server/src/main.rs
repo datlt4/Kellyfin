@@ -14,6 +14,7 @@ mod stream;
 mod transcode;
 mod upscale;
 mod narration;
+mod pipeline;
 mod util;
 
 use anyhow::{bail, Context};

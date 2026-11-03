@@ -53,6 +53,9 @@ pub fn router(st: AppState) -> Router {
         .route("/admin/narration/token", post(narration::new_token))
         .route("/admin/narration/jobs", post(narration::queue))
         .route("/admin/narration/jobs/{id}", delete(narration::delete_job))
+        .route("/admin/narration/jobs/{id}/retry", post(narration::retry))
+        .route("/admin/narration/presets", get(narration::presets).post(narration::create_preset))
+        .route("/admin/narration/presets/{id}", put(narration::update_preset).delete(narration::delete_preset))
         .route("/admin/restart", post(admin::restart))
         .route("/admin/shutdown", post(admin::shutdown))
         .route("/admin/export", get(admin::export))
@@ -85,6 +88,7 @@ pub fn router(st: AppState) -> Router {
         // Narration worker (narrator/, next to the film-sub services).
         .route("/narrator/claim", post(narration::claim))
         .route("/narrator/jobs/{id}/audio", get(narration::audio))
+        .route("/narrator/jobs/{id}/video", get(narration::video))
         .route("/narrator/jobs/{id}/subtitle/{key}", get(narration::subtitle))
         .route("/narrator/jobs/{id}/progress", post(narration::progress))
         .route("/narrator/jobs/{id}/fail", post(narration::fail))

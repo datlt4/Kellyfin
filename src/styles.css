@@ -654,3 +654,33 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
 .stages span.now { color: #fff; border-color: transparent; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
 .stages span.failed { color: #ff6b81; border-color: #ff6b81; }
 .suspect.running { border-left: 3px solid var(--accent-2); padding-left: 10px; }
+
+/* Narration pipeline canvas (PipelineEditor). */
+.pipe-name { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.pipe-palette { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.pipe-board { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background:
+  radial-gradient(circle, rgba(255, 255, 255, 0.06) 1px, transparent 1px) 0 0 / 20px 20px, var(--bg); max-height: 480px; }
+.pipe-canvas { position: relative; }
+.pipe-wires { position: absolute; inset: 0; pointer-events: none; }
+.pipe-wire { fill: none; stroke: var(--accent-2); stroke-width: 2.5; }
+.pipe-wire.pending { stroke-dasharray: 6 5; }
+.pipe-hit { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
+.pipe-hit:hover { stroke: rgba(255, 107, 129, 0.35); }
+.pipe-node { position: absolute; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); font-size: 12px; }
+.pipe-head { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 10px 10px 0 0;
+  background: var(--surface-2); cursor: grab; touch-action: none; font-weight: 600; user-select: none; }
+.pipe-head span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pipe-node.whisper .pipe-head, .pipe-node.ocr .pipe-head, .pipe-node.subtitle .pipe-head { border-left: 3px solid #8b5cf6; }
+.pipe-node.translate .pipe-head { border-left: 3px solid #22b8f0; }
+.pipe-node.voice .pipe-head { border-left: 3px solid #f59e0b; }
+.pipe-node.mux .pipe-head { border-left: 3px solid #22c55e; }
+.pipe-x { border: 0; background: none; color: var(--muted); font-size: 16px; line-height: 1; padding: 0 2px; }
+.pipe-body { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; }
+.pipe-body select, .pipe-body input { width: 100%; padding: 4px 6px; font-size: 12px; }
+.pipe-inline { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.pipe-inline input { width: 56px; }
+.pipe-port { position: absolute; top: 14px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent-2);
+  border: 2px solid var(--bg); touch-action: none; }
+.pipe-port.in { left: -7px; background: var(--muted); }
+.pipe-port.out { right: -7px; cursor: crosshair; }

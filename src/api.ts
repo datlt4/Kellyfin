@@ -73,13 +73,26 @@ export type UpscaleOverview = {
   }[];
 };
 export type NarrationConfig = { voice_vi: string; voice_zh: string };
+/** A narration pipeline (server: pipeline.rs). */
+export type PipeNode = {
+  id: string;
+  type: "whisper" | "ocr" | "subtitle" | "translate" | "voice" | "mux";
+  lang?: string;
+  engine?: string;
+  voice?: string;
+  crop?: number;
+  x: number;
+  y: number;
+};
+export type PipeGraph = { nodes: PipeNode[]; edges: [string, string][] };
+export type Preset = { id: string; name: string; builtin: boolean; graph: PipeGraph };
 export type NarrationCheck = { name: string; ok: boolean; detail: string };
 export type NarrationOverview = {
   config: NarrationConfig;
   token: string;
   workers: { name: string; seen_secs_ago: number; checks: NarrationCheck[]; voices: string[] }[];
   jobs: {
-    id: number; item_id: number; title: string; library: string; source: string; langs: string; status: string;
+    id: number; item_id: number; title: string; library: string; preset: string | null; source: string; langs: string; status: string;
     stage: number; step: string | null; progress: number; error: string | null; worker: string | null; updated_at: number;
   }[];
 };
@@ -333,4 +346,14 @@ export async function checkNarration(): Promise<NarrationOverview> {
     throw new Error(`film-sub services not ready: ${bad.map((c) => `${c.name}: ${c.detail}`).join("; ") || "no report yet, wait a minute"}`);
   }
   return ov;
+}
+
+/** Asks which pipeline to queue with (built-in and saved presets); null when cancelled. */
+export async function pickPreset(): Promise<string | null> {
+  const list = await api<Preset[]>("/admin/narration/presets");
+  const n = prompt(`Pipeline:\n${list.map((p, i) => `${i + 1}. ${p.name}`).join("\n")}`, "1");
+  if (n === null) return null;
+  const p = list[Number(n) - 1];
+  if (!p) throw new Error("No such pipeline");
+  return p.id;
 }
