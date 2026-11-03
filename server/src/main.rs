@@ -111,6 +111,7 @@ async fn serve(cfg: Config, db: SqlitePool, images: PathBuf) -> anyhow::Result<(
     tracing::info!("listening on {}", cfg.addr);
     let transcoder = transcode::Transcoder::new(cfg.data.join("transcode"));
     let st = AppState { db, cfg: Arc::new(cfg), images, scanner: Default::default(), transcoder, sessions: Default::default(), upscale_workers: Default::default(), narration_workers: Default::default() };
+    tokio::spawn(narration::resume(st.clone()));
     axum::serve(listener, api::router(st)).with_graceful_shutdown(shutdown()).await?;
     Ok(())
 }

@@ -596,11 +596,12 @@ export const SPOKEN = [
   ["fr", "French"], ["es", "Spanish"], ["it", "Italian"], ["pt", "Portuguese"], ["ru", "Russian"], ["th", "Thai"],
   ["id", "Indonesian"], ["ms", "Malay"], ["vi", "Vietnamese"],
 ];
-const STAGES = ["Subtitles", "Translate en · vi · zh", "Voice (TTS)", "Mux"];
+const STAGES = ["Subtitles", "Translate en · vi · zh", "Voice (TTS)", "Mux (Kellyfin server)"];
+const busy = (status: string) => status === "running" || status === "muxing";
 
 function Stages(props: { status: string; stage: number }) {
   const state = (i: number) =>
-    props.status === "done" || i + 1 < props.stage ? "done" : i + 1 === props.stage ? (props.status === "failed" ? "failed" : props.status === "running" ? "now" : "") : "";
+    props.status === "done" || i + 1 < props.stage ? "done" : i + 1 === props.stage ? (props.status === "failed" ? "failed" : busy(props.status) ? "now" : "") : "";
   return (
     <div class="stages">
       <For each={STAGES}>{(s, i) => <span class={state(i())}>{s}</span>}</For>
@@ -649,8 +650,8 @@ function Narration() {
         <h2>Narration <span class="tag">thuyết minh</span></h2>
         <p class="muted">
           A worker next to the film-sub services makes subtitles in the spoken language (Whisper) when a video has none,
-          translates them into English, Vietnamese and Chinese (Argos), reads them out (VieNeu for Vietnamese, edge-tts
-          for Chinese) and mixes the voice over the original sound. The result becomes an extra audio track and
+          translates them into English, Vietnamese and Chinese (Argos) and reads them out (VieNeu for Vietnamese, edge-tts
+          for Chinese); this server then mixes the voice over the original sound while the worker takes the next video. The result becomes an extra audio track and
           subtitles; the video files are never changed. The worker connects to Kellyfin by itself and reports whether
           the services answer. Setup: <code>narrator/README.md</code>.
         </p>
@@ -719,22 +720,24 @@ function Narration() {
       <section class="panel">
         <h2>Queue</h2>
         <p class="muted small">
-          {(ov()?.jobs ?? []).filter((j) => j.status === "running").length} processing ·{" "}
+          {(ov()?.jobs ?? []).filter((j) => j.status === "running").length} on the GPU ·{" "}
+          {(ov()?.jobs ?? []).filter((j) => j.status === "muxing").length} muxing ·{" "}
           {(ov()?.jobs ?? []).filter((j) => j.status === "queued").length} waiting ·{" "}
           {(ov()?.jobs ?? []).filter((j) => j.status === "done").length} done ·{" "}
           {(ov()?.jobs ?? []).filter((j) => j.status === "failed").length} failed
         </p>
         <For each={ov()?.jobs} fallback={<p class="muted">No jobs yet.</p>}>
           {(j) => (
-            <div class="suspect" classList={{ running: j.status === "running" }}>
+            <div class="suspect" classList={{ running: busy(j.status) }}>
               <div>
                 <A href={`/item/${j.item_id}`}>{j.title}</A>
                 <div class="muted small">
                   {j.library} · {j.source === "auto" ? "spoken: detect" : `spoken: ${j.source}`} · voice {j.langs} · {j.status}
                   {j.status === "running" ? ` ${Math.round(j.progress * 100)}% on ${j.worker}` : ""}
+                  {j.status === "muxing" ? " on the Kellyfin server" : ""}
                 </div>
                 <Show when={j.status !== "queued"}><Stages status={j.status} stage={j.stage} /></Show>
-                <Show when={j.status === "running" && j.step}><div class="small">{j.step}</div></Show>
+                <Show when={busy(j.status) && j.step}><div class="small">{j.step}</div></Show>
                 <Show when={j.error}><div class="error small">{j.error!.slice(0, 300)}</div></Show>
               </div>
               <div class="row-btns">

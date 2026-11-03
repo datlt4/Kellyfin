@@ -10,7 +10,8 @@ Per video, in four stages (shown in **Settings → Narration → Queue**):
 2. **Translation** into English, Vietnamese and Chinese with Argos / LibreTranslate (subtitles the video already has
    are reused);
 3. **Voice**: VieNeu-TTS reads Vietnamese, edge-tts reads Chinese (edge-tts is a Microsoft service: needs Internet);
-4. **Mux**: the voice over the original sound, which ducks while the voice speaks.
+4. **Mux**, on the Kellyfin server: the voice over the original sound, which ducks while the voice speaks. The worker
+   hands the voice over and takes the next video meanwhile.
 
 ## Run it
 

@@ -6,7 +6,8 @@ comes from Kellyfin (the video file never leaves the server and is never changed
   1. subtitles in the spoken language: the video's own, else Whisper ("auto": Argos detects the language);
   2. translation into English, Vietnamese and Chinese (Argos), unless the video has them;
   3. a voice reads each narration language on the subtitle timeline: VieNeu (vi), edge-tts (zh, needs Internet);
-  4. mux: the voice over the original sound, ducked while it speaks (sidechaincompress + amix), as AAC.
+  4. mux — on the Kellyfin server: the worker uploads each voice alone (FLAC) and takes the next video at once,
+     while Kellyfin mixes the voice over the ducked original sound from the video file.
 Subtitles and tracks go back to Kellyfin, which offers them as extra subtitle / audio tracks. Every step that needs a
 service checks it first and fails the job with a clear message when it does not answer.
 
@@ -40,8 +41,6 @@ WORK = os.environ.get("WORK_DIR") or tempfile.gettempdir()
 TRANSLATE_WORKERS = int(os.environ.get("TRANSLATE_WORKERS", "6"))
 EDGE_PARALLEL = int(os.environ.get("EDGE_TTS_PARALLEL", "12"))
 SR = 48000
-AF = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
-DUCK = "sidechaincompress=threshold=0.01:ratio=5:attack=50:release=600"
 
 
 def log(*a):
@@ -314,18 +313,9 @@ def tts_zh(cues, voice, duration, dest, tmp, on_progress):
                    input=pcm, check=True)
 
 
-def mix(original, voice, dest):
-    """The voice over the original sound, which ducks while the voice speaks; as long as the original.
-    The voice is padded with silence: sidechaincompress stops with its shorter input, which cut the old Energon
-    tracks off at the last spoken cue."""
-    graph = (f"[0:a:0]{AF}[og];[1:a:0]{AF},apad[v];[v]asplit=2[vs][vm];[og][vs]{DUCK}[d];"
-             f"[d][vm]amix=inputs=2:duration=first:normalize=0[out]")
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", original, "-i", voice, "-filter_complex", graph, "-map", "[out]",
-                    "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", dest], check=True)
-    dur = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", dest],
-                         capture_output=True, text=True).stdout.strip()
-    if not dur or float(dur) < 1:
-        raise JobError("the mixed track came out empty")
+def to_flac(voice, dest):
+    """The voice alone, lossless (mostly silence, so small); Kellyfin mixes it in."""
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", voice, "-ac", "2", "-ar", str(SR), "-c:a", "flac", dest], check=True)
 
 
 # ---------- one job ----------
@@ -336,8 +326,8 @@ def process(job):
     langs, subs, duration = job["langs"], job.get("subs") or {}, job.get("duration") or 0
     source = job.get("source") or "auto"
     tmp = tempfile.mkdtemp(prefix=f"narration-{jid}-", dir=WORK)
-    # Share of the progress bar per stage: 1 subtitles, 2 translation, 3 voice, 4 mux.
-    span = {1: (0.0, 0.25), 2: (0.25, 0.2), 3: (0.45, 0.45), 4: (0.9, 0.1)}
+    # Share of the progress bar per stage: 1 subtitles, 2 translation, 3 voice (4, the mux, is Kellyfin's).
+    span = {1: (0.0, 0.3), 2: (0.3, 0.2), 3: (0.5, 0.4)}
 
     def step(stage, label, frac=0.0):
         a, w = span[stage]
@@ -361,12 +351,6 @@ def process(job):
 
     try:
         log(f"job {jid}: {job['title']} ({source}) -> narration {','.join(langs)} via {base}")
-        step(1, "Fetching the original sound")
-        original = os.path.join(tmp, "original.mka")
-        kf_download(f"/narrator/jobs/{jid}/audio", original)
-        if not duration:
-            duration = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
-                                             original], capture_output=True, text=True).stdout.strip() or 0)
 
         # 1. Subtitles in the spoken language.
         texts = {}
@@ -378,6 +362,10 @@ def process(job):
         elif source == "auto" and subs and all(t in subs for t in targets):
             source = next(iter(subs))  # nothing to make: every target already exists
         else:
+            # Only Whisper needs the sound itself.
+            step(1, "Fetching the original sound")
+            original = os.path.join(tmp, "original.mka")
+            kf_download(f"/narrator/jobs/{jid}/audio", original)
             step(1, f"Transcribing {'the spoken language' if source == 'auto' else source} (Whisper)")
             cues = whisper(base, original, source, tmp)
             if source == "auto":
@@ -404,8 +392,10 @@ def process(job):
         for l in langs:
             if not texts.get(l):
                 raise JobError(f"no {l} subtitles to read out")
+        if not duration:  # unprobed video: the timeline ends with the last line
+            duration = max(c[1] for l in langs for c in texts[l]) + 1
 
-        # 3. Voice, then 4. mux, per narration language.
+        # 3. Voice per narration language; 4. (mux) happens on the Kellyfin server.
         for n, l in enumerate(langs):
             srt = save(l, texts[l], upload=False)
             voice_wav = os.path.join(tmp, f"{l}.voice.wav")
@@ -416,13 +406,12 @@ def process(job):
                 tts_vi(base, srt, job["voice_vi"], voice_wav, prog)
             else:
                 tts_zh(texts[l], job["voice_zh"], duration, voice_wav, tmp, prog)
-            step(4, f"Muxing the {l} narration over the original sound", n / len(langs))
-            track = os.path.join(tmp, f"{l}.m4a")
-            mix(original, voice_wav, track)
-            kf_upload(jid, f"{l}.m4a", track)
-            log(f"job {jid}: {l} narration uploaded ({os.path.getsize(track) >> 20} MB)")
+            flac = os.path.join(tmp, f"{l}.voice.flac")
+            to_flac(voice_wav, flac)
+            kf_upload(jid, f"{l}.voice.flac", flac)
+            log(f"job {jid}: {l} voice uploaded ({os.path.getsize(flac) >> 20} MB)")
         kf_json("POST", f"/narrator/jobs/{jid}/done")
-        log(f"job {jid}: done")
+        log(f"job {jid}: handed to Kellyfin for the mux")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

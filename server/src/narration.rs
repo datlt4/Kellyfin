@@ -1,7 +1,9 @@
 //! Narration (thuyết minh). A worker in the film-sub compose (narrator/) pulls jobs from here. Per video, in four
 //! stages: 1. subtitles in the spoken language (the video's own, else Whisper; "auto" detects the language),
 //! 2. translation into English, Vietnamese and Chinese (Argos), 3. a voice reads the narration languages (VieNeu for
-//! Vietnamese, edge-tts for Chinese), 4. mux: the voice over the ducked original sound. Results live in
+//! Vietnamese, edge-tts for Chinese), 4. mux — done here, on the server, from the video file itself: the worker
+//! uploads the voice and moves straight on to the next video while the server mixes it over the ducked original
+//! sound, one video at a time. Results live in
 //! data/narration/<item>/ (`<lang>.srt`, `<lang>.m4a`): the video files are never touched, and playback adds the
 //! narration as an extra audio track (remux / HLS take it as a second input).
 use crate::{
@@ -117,12 +119,99 @@ fn lang_code(lang: &str) -> Option<&'static str> {
     })
 }
 
-/// A file name a worker may upload: `<SUB_LANGS>.srt` or `<narration lang>.m4a`.
+/// A file name a worker may upload: `<SUB_LANGS>.srt` or `<narration lang>.voice.flac` (the voice alone).
 fn upload_ok(name: &str) -> bool {
     match name.rsplit_once('.') {
         Some((l, "srt")) => SUB_LANGS.contains(&l),
-        Some((l, "m4a")) => LANGS.iter().any(|x| x.0 == l),
+        Some((l, "flac")) => l.strip_suffix(".voice").is_some_and(|l| LANGS.iter().any(|x| x.0 == l)),
         _ => false,
+    }
+}
+
+/// Ducks the original sound while the voice speaks and adds the voice. The voice is padded with silence first:
+/// sidechaincompress ends with its shorter input, which once cut tracks off at the last spoken line.
+fn mux_graph(audio: i64) -> String {
+    const AF: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+    format!(
+        "[0:{audio}]{AF}[og];[1:a:0]{AF},apad[v];[v]asplit=2[vs][vm];\
+         [og][vs]sidechaincompress=threshold=0.01:ratio=5:attack=50:release=600[d];\
+         [d][vm]amix=inputs=2:duration=first:normalize=0[out]"
+    )
+}
+
+/// One mux at a time: the mini PC also transcodes.
+fn mux_lock() -> &'static tokio::sync::Semaphore {
+    static LOCK: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Semaphore::new(1))
+}
+
+/// Stage 4 of a job whose voices are uploaded: `<lang>.voice.flac` -> `<lang>.m4a`, then done (or failed).
+async fn mux(st: AppState, id: i64) {
+    let _turn = mux_lock().acquire().await;
+    let r = async {
+        let (item, path, streams): (i64, String, Option<String>) = sqlx::query_as(
+            "SELECT i.id, i.path, i.streams FROM narration_jobs j JOIN items i ON i.id = j.item_id WHERE j.id = ?",
+        )
+        .bind(id)
+        .fetch_one(&st.db)
+        .await?;
+        let streams: Vec<Value> = streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let a = source_audio(&streams).ok_or_else(|| anyhow::anyhow!("the video has no audio"))?;
+        let d = dir(&st.cfg.data, item);
+        for (code, ..) in LANGS {
+            let voice = d.join(format!("{code}.voice.flac"));
+            if !voice.is_file() {
+                continue;
+            }
+            sqlx::query("UPDATE narration_jobs SET step = ?, updated_at = ? WHERE id = ?")
+                .bind(format!("Muxing the {code} narration over the original sound (Kellyfin server)"))
+                .bind(util::now())
+                .bind(id)
+                .execute(&st.db)
+                .await?;
+            let part = d.join(format!("{code}.m4a.part"));
+            let out = Command::new("ffmpeg")
+                .args(["-v", "error", "-nostdin", "-y", "-i"])
+                .arg(format!("file:{path}"))
+                .arg("-i")
+                .arg(format!("file:{}", voice.display()))
+                .args(["-filter_complex", &mux_graph(a), "-map", "[out]", "-c:a", "aac", "-b:a", "128k"])
+                .args(["-movflags", "+faststart", "-f", "mp4"])
+                .arg(&part)
+                .kill_on_drop(true)
+                .output()
+                .await?;
+            if !out.status.success() {
+                anyhow::bail!("mux {code}: {}", String::from_utf8_lossy(&out.stderr).trim());
+            }
+            tokio::fs::rename(&part, d.join(format!("{code}.m4a"))).await?;
+            let _ = tokio::fs::remove_file(&voice).await;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    let (status, error) = match r {
+        Ok(()) => ("done", None),
+        Err(e) => ("failed", Some(format!("{e:#}"))),
+    };
+    tracing::info!("narration job {id} {status}");
+    let _ = sqlx::query("UPDATE narration_jobs SET status = ?, step = NULL, progress = 1, error = ?, updated_at = ? WHERE id = ?")
+        .bind(status)
+        .bind(error)
+        .bind(util::now())
+        .bind(id)
+        .execute(&st.db)
+        .await;
+}
+
+/// After a restart: finish the muxes that were waiting or running.
+pub async fn resume(st: AppState) {
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM narration_jobs WHERE status = 'muxing' ORDER BY id")
+        .fetch_all(&st.db)
+        .await
+        .unwrap_or_default();
+    for id in ids {
+        tokio::spawn(mux(st.clone(), id));
     }
 }
 
@@ -420,14 +509,18 @@ pub async fn upload(State(st): State<AppState>, headers: HeaderMap, Path((id, na
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The worker has uploaded everything: the server muxes (stage 4) and the worker takes the next video.
 pub async fn done(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<i64>) -> ApiResult<StatusCode> {
     worker_auth(&st, &headers).await?;
-    sqlx::query("UPDATE narration_jobs SET status = 'done', stage = 4, step = NULL, progress = 1, error = NULL, updated_at = ? WHERE id = ?")
-        .bind(util::now())
-        .bind(id)
-        .execute(&st.db)
-        .await?;
-    tracing::info!("narration job {id} done");
+    sqlx::query(
+        "UPDATE narration_jobs SET status = 'muxing', stage = 4, step = 'Waiting to mux (Kellyfin server)', progress = 0.9,
+           error = NULL, updated_at = ? WHERE id = ?",
+    )
+    .bind(util::now())
+    .bind(id)
+    .execute(&st.db)
+    .await?;
+    tokio::spawn(mux(st, id));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -463,7 +556,8 @@ pub async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<O
         "SELECT j.id, j.item_id, i.title, l.name AS library, j.source, j.langs, j.status, j.stage, j.step, j.progress, j.error,
            j.worker, j.updated_at
          FROM narration_jobs j JOIN items i ON i.id = j.item_id JOIN libraries l ON l.id = i.library_id
-         ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END, j.id DESC
+         ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'muxing' THEN 0 WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END,
+           j.id DESC
          LIMIT 500",
     )
     .fetch_all(&st.db)
@@ -557,8 +651,9 @@ mod tests {
         assert_eq!(lang_code("zh-Hans"), Some("zh"));
         assert_eq!(lang_code("kor"), Some("ko"));
         assert_eq!(lang_code("xx"), None);
-        assert!(upload_ok("ko.srt") && upload_ok("vi.m4a"));
-        assert!(!upload_ok("ko.m4a") && !upload_ok("../x.srt") && !upload_ok("vi.wav"));
+        assert!(upload_ok("ko.srt") && upload_ok("vi.voice.flac"));
+        assert!(!upload_ok("vi.m4a") && !upload_ok("ko.voice.flac") && !upload_ok("../x.srt") && !upload_ok("vi.wav"));
+        assert!(mux_graph(2).starts_with("[0:2]aformat"));
         let d = std::env::temp_dir().join(format!("kf-narration-{}", std::process::id()));
         std::fs::create_dir_all(dir(&d, 7)).unwrap();
         std::fs::write(dir(&d, 7).join("zh.m4a"), b"x").unwrap();
