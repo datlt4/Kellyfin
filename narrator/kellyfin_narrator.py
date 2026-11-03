@@ -10,9 +10,11 @@ comes from Kellyfin (the video file never leaves the server and is never changed
 Subtitles and tracks go back to Kellyfin, which offers them as extra subtitle / audio tracks. Every step that needs a
 service checks it first and fails the job with a clear message when it does not answer.
 
-Environment: KELLYFIN_URL, KELLYFIN_NARRATOR_TOKEN (Settings -> Narration), WORKER_NAME, POLL_SECONDS (15),
-FILMSUB_URL (overrides the URL set in Kellyfin, e.g. http://nginx inside the film-sub compose), WORK_DIR,
-TRANSLATE_WORKERS (6), EDGE_TTS_PARALLEL (12).
+It reaches Kellyfin itself (Kellyfin never calls it or the services) and reports, with every poll, whether the
+services answer; Settings -> Narration shows that report.
+
+Environment: KELLYFIN_URL, KELLYFIN_NARRATOR_TOKEN (Settings -> Narration), FILMSUB_URL (http://nginx: the film-sub
+compose's nginx), WORKER_NAME, POLL_SECONDS (15), WORK_DIR, TRANSLATE_WORKERS (6), EDGE_TTS_PARALLEL (12).
 """
 import asyncio
 import json
@@ -33,7 +35,7 @@ SERVER = os.environ["KELLYFIN_URL"].rstrip("/")
 TOKEN = os.environ["KELLYFIN_NARRATOR_TOKEN"]
 NAME = os.environ.get("WORKER_NAME") or socket.gethostname()
 POLL = int(os.environ.get("POLL_SECONDS", "15"))
-FILMSUB = os.environ.get("FILMSUB_URL", "").rstrip("/")
+FILMSUB = (os.environ.get("FILMSUB_URL") or "http://nginx").rstrip("/")
 WORK = os.environ.get("WORK_DIR") or tempfile.gettempdir()
 TRANSLATE_WORKERS = int(os.environ.get("TRANSLATE_WORKERS", "6"))
 EDGE_PARALLEL = int(os.environ.get("EDGE_TTS_PARALLEL", "12"))
@@ -314,9 +316,7 @@ def mix(original, voice, dest):
 
 def process(job):
     jid = job["job_id"]
-    base = (FILMSUB or job.get("url") or "").rstrip("/")
-    if not base:
-        raise JobError("no film-sub server URL (Settings -> Narration)")
+    base = FILMSUB
     langs, subs, duration = job["langs"], job.get("subs") or {}, job.get("duration") or 0
     source = job.get("source") or "auto"
     tmp = tempfile.mkdtemp(prefix=f"narration-{jid}-", dir=WORK)
@@ -410,11 +410,68 @@ def process(job):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def main():
-    log(f"worker {NAME} -> {SERVER}" + (f", film-sub {FILMSUB}" if FILMSUB else ""))
-    while True:
+# ---------- service report sent with every poll ----------
+
+_report = {"at": 0.0, "edge_at": 0.0, "checks": [], "voices": [], "edge": None}
+
+
+def health():
+    """Whisper, Argos, VieNeu about once a minute and edge-tts every five, for Settings -> Narration."""
+    now = time.time()
+    if now - _report["at"] < 60:
+        return _report["checks"], _report["voices"]
+
+    def probe(name, fn):
         try:
-            r = kf.post(kf_url("/narrator/claim"), json={"worker": NAME}, timeout=60)
+            ok, detail = fn()
+        except Exception as e:
+            ok, detail = False, f"{type(e).__name__}: {e}"
+        return {"name": name, "ok": ok, "detail": str(detail)[:300]}
+
+    def whisper_ok():
+        r = requests.get(f"{FILMSUB}/whisper/health", timeout=10)
+        r.raise_for_status()
+        return True, r.text.strip()
+
+    def argos_ok():
+        r = requests.get(f"{FILMSUB}/translate/languages", timeout=10)
+        r.raise_for_status()
+        codes = [l["code"] for l in r.json()]
+        need = all(any(c.split("-")[0] == x for c in codes) for x in ("en", "vi", "zh"))
+        return need, ", ".join(codes)
+
+    voices = []
+
+    def vieneu_ok():
+        voices.extend(VieNeu(FILMSUB).voices())
+        return bool(voices), f"{len(voices)} voices" if voices else "no model loaded"
+
+    def edge_ok():
+        if now - _report["edge_at"] >= 300 or _report["edge"] is None:
+            import edge_tts
+
+            async def go():
+                async for chunk in edge_tts.Communicate("测试", "zh-CN-XiaoxiaoNeural").stream():
+                    if chunk["type"] == "audio":
+                        return True
+                return False
+
+            _report["edge"] = asyncio.run(asyncio.wait_for(go(), 20))
+            _report["edge_at"] = now
+        return _report["edge"], "Microsoft speech service reachable" if _report["edge"] else "no audio"
+
+    checks = [probe("Whisper (subtitles)", whisper_ok), probe("Argos (translation)", argos_ok),
+              probe("VieNeu (Vietnamese voice)", vieneu_ok), probe("edge-tts (Chinese voice, Internet)", edge_ok)]
+    _report.update(at=now, checks=checks, voices=voices)
+    return checks, voices
+
+
+def main():
+    log(f"worker {NAME} -> {SERVER}, film-sub {FILMSUB}")
+    while True:
+        checks, voices = health()
+        try:
+            r = kf.post(kf_url("/narrator/claim"), json={"worker": NAME, "checks": checks, "voices": voices}, timeout=60)
             if r.status_code in (401, 403):
                 log("server refused the token (KELLYFIN_NARRATOR_TOKEN, Settings -> Narration)")
                 time.sleep(POLL * 4)

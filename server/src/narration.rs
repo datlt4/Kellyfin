@@ -36,7 +36,6 @@ pub const AUDIO_BASE: i64 = 1000;
 /// A running job not heard from for this long is given to another worker.
 const STALE_SECS: i64 = 900;
 const TOKEN_KEY: &str = "narration.token";
-const URL_KEY: &str = "narration.url";
 const VOICE_VI_KEY: &str = "narration.voice_vi";
 const VOICE_ZH_KEY: &str = "narration.voice_zh";
 const DEFAULT_VOICE_VI: &str = "Ngọc Huyền";
@@ -127,18 +126,42 @@ fn upload_ok(name: &str) -> bool {
     }
 }
 
+/// What a worker last said about the film-sub services it uses (it checks them itself; Kellyfin never calls them).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Check {
+    name: String,
+    ok: bool,
+    detail: String,
+}
+
+struct Seen {
+    at: Instant,
+    checks: Vec<Check>,
+    voices: Vec<String>,
+}
+
 #[derive(Default)]
-pub struct Workers(Mutex<HashMap<String, Instant>>);
+pub struct Workers(Mutex<HashMap<String, Seen>>);
 
 impl Workers {
-    fn touch(&self, name: &str) {
-        self.0.lock().unwrap().insert(name.to_owned(), Instant::now());
+    fn touch(&self, h: Hello) {
+        self.0.lock().unwrap().insert(h.worker, Seen { at: Instant::now(), checks: h.checks, voices: h.voices });
     }
 
     fn online(&self) -> Vec<WorkerView> {
         let mut m = self.0.lock().unwrap();
-        m.retain(|_, t| t.elapsed() < Duration::from_secs(120));
-        m.iter().map(|(name, t)| WorkerView { name: name.clone(), seen_secs_ago: t.elapsed().as_secs() }).collect()
+        m.retain(|_, w| w.at.elapsed() < Duration::from_secs(120));
+        let mut v: Vec<WorkerView> = m
+            .iter()
+            .map(|(name, w)| WorkerView {
+                name: name.clone(),
+                seen_secs_ago: w.at.elapsed().as_secs(),
+                checks: w.checks.clone(),
+                voices: w.voices.clone(),
+            })
+            .collect();
+        v.sort_by_key(|w| w.seen_secs_ago);
+        v
     }
 }
 
@@ -146,6 +169,10 @@ impl Workers {
 struct WorkerView {
     name: String,
     seen_secs_ago: u64,
+    /// Service checks from the worker's last poll.
+    checks: Vec<Check>,
+    /// VieNeu preset voices, for the voice picker.
+    voices: Vec<String>,
 }
 
 async fn token(st: &AppState) -> ApiResult<String> {
@@ -168,8 +195,6 @@ async fn worker_auth(st: &AppState, headers: &HeaderMap) -> ApiResult<()> {
 
 #[derive(Serialize, Deserialize)]
 pub struct Config {
-    /// film-sub base URL (nginx in front of Whisper, Argos and VieNeu), e.g. http://192.168.0.182:8080.
-    url: String,
     voice_vi: String,
     voice_zh: String,
 }
@@ -177,7 +202,6 @@ pub struct Config {
 async fn config(st: &AppState) -> Config {
     let get = |k| crate::settings::get(&st.db, k);
     Config {
-        url: get(URL_KEY).await.unwrap_or_default(),
         voice_vi: get(VOICE_VI_KEY).await.unwrap_or_else(|| DEFAULT_VOICE_VI.into()),
         voice_zh: get(VOICE_ZH_KEY).await.unwrap_or_else(|| DEFAULT_VOICE_ZH.into()),
     }
@@ -204,6 +228,11 @@ fn source_audio(streams: &[Value]) -> Option<i64> {
 #[derive(Deserialize)]
 pub struct Hello {
     worker: String,
+    /// The worker's own check of Whisper / Argos / VieNeu / edge-tts, repeated about once a minute.
+    #[serde(default)]
+    checks: Vec<Check>,
+    #[serde(default)]
+    voices: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -227,7 +256,8 @@ pub struct Claimed {
 /// Hands the worker the oldest queued job (204 when there is none).
 pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json<Hello>) -> ApiResult<Response> {
     worker_auth(&st, &headers).await?;
-    st.narration_workers.touch(&h.worker);
+    let worker = h.worker.clone();
+    st.narration_workers.touch(h);
     let now = util::now();
     let Some((job_id, item_id, source, langs)): Option<(i64, i64, String, String)> = sqlx::query_as(
         "UPDATE narration_jobs SET status = 'running', worker = ?1, stage = 0, step = 'starting', progress = 0, error = NULL,
@@ -236,7 +266,7 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
                      WHERE status = 'queued' OR (status = 'running' AND updated_at < ?3) ORDER BY id LIMIT 1)
          RETURNING id, item_id, source, langs",
     )
-    .bind(&h.worker)
+    .bind(&worker)
     .bind(now)
     .bind(now - STALE_SECS)
     .fetch_optional(&st.db)
@@ -256,7 +286,7 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
             subs.entry(code.to_owned()).or_insert(t.key);
         }
     }
-    tracing::info!("narration job {job_id} (item {item_id}) -> {}", h.worker);
+    tracing::info!("narration job {job_id} (item {item_id}) -> {worker}");
     let langs = langs.split(',').map(str::to_owned).collect();
     Ok(Json(Claimed { job_id, item_id, title, duration, source, targets: TARGETS.to_vec(), langs, subs, config: config(&st).await })
         .into_response())
@@ -420,11 +450,7 @@ pub async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<O
 }
 
 pub async fn save_config(State(st): State<AppState>, _a: Admin, Json(c): Json<Config>) -> ApiResult<StatusCode> {
-    let url = c.url.trim().trim_end_matches('/');
-    if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "the URL must start with http:// or https://"));
-    }
-    for (k, v) in [(URL_KEY, url), (VOICE_VI_KEY, c.voice_vi.trim()), (VOICE_ZH_KEY, c.voice_zh.trim())] {
+    for (k, v) in [(VOICE_VI_KEY, c.voice_vi.trim()), (VOICE_ZH_KEY, c.voice_zh.trim())] {
         sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
             .bind(k)
             .bind(v)
@@ -444,83 +470,6 @@ pub async fn new_token(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<
     Ok(Json(t))
 }
 
-#[derive(Serialize)]
-pub struct Check {
-    name: &'static str,
-    ok: bool,
-    detail: String,
-}
-
-#[derive(Serialize)]
-pub struct CheckResult {
-    checks: Vec<Check>,
-    /// VieNeu preset voices, for the voice picker.
-    voices: Vec<String>,
-}
-
-/// Asks each film-sub service whether it answers (the worker checks again before every step that needs one).
-pub async fn check(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<CheckResult>> {
-    let base = config(&st).await.url;
-    if base.is_empty() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "set the film-sub server URL first"));
-    }
-    let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().map_err(anyhow::Error::from)?;
-    let get = |path: &str| http.get(format!("{base}{path}")).send();
-    let mut checks = Vec::new();
-    let r = get("/whisper/health").await;
-    checks.push(match r {
-        Ok(r) if r.status().is_success() => Check { name: "Whisper (subtitles)", ok: true, detail: r.text().await.unwrap_or_default() },
-        Ok(r) => Check { name: "Whisper (subtitles)", ok: false, detail: format!("HTTP {}", r.status()) },
-        Err(e) => Check { name: "Whisper (subtitles)", ok: false, detail: e.to_string() },
-    });
-    let r = get("/translate/languages").await;
-    checks.push(match r {
-        Ok(r) if r.status().is_success() => {
-            let langs: Vec<Value> = r.json().await.unwrap_or_default();
-            let codes: Vec<&str> = langs.iter().filter_map(|l| l["code"].as_str()).collect();
-            let ok = codes.contains(&"en") && codes.contains(&"vi") && codes.iter().any(|c| c.starts_with("zh"));
-            Check { name: "Argos (translation)", ok, detail: codes.join(", ") }
-        }
-        Ok(r) => Check { name: "Argos (translation)", ok: false, detail: format!("HTTP {}", r.status()) },
-        Err(e) => Check { name: "Argos (translation)", ok: false, detail: e.to_string() },
-    });
-    let voices = vieneu_voices(&http, &base).await;
-    checks.push(match &voices {
-        Ok(v) if !v.is_empty() => Check { name: "VieNeu (Vietnamese voice)", ok: true, detail: format!("{} voices", v.len()) },
-        Ok(_) => Check { name: "VieNeu (Vietnamese voice)", ok: false, detail: "no model loaded".into() },
-        Err(e) => Check { name: "VieNeu (Vietnamese voice)", ok: false, detail: e.to_string() },
-    });
-    Ok(Json(CheckResult { checks, voices: voices.unwrap_or_default() }))
-}
-
-/// Gradio's two-step call; nginx balances two VieNeu instances, so the sticky cookie must follow.
-async fn vieneu_voices(http: &reqwest::Client, base: &str) -> anyhow::Result<Vec<String>> {
-    let r = http.post(format!("{base}/gradio_api/call/_srt_voices")).json(&json!({"data": []})).send().await?.error_for_status()?;
-    let cookie: Vec<String> = r
-        .headers()
-        .get_all(reqwest::header::SET_COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok()?.split(';').next().map(str::to_owned))
-        .collect();
-    let id = r.json::<Value>().await?["event_id"].as_str().unwrap_or_default().to_owned();
-    let body = http
-        .get(format!("{base}/gradio_api/call/_srt_voices/{id}"))
-        .header(reqwest::header::COOKIE, cookie.join("; "))
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-    let data = body.lines().filter_map(|l| l.strip_prefix("data:")).last().unwrap_or("[]").trim();
-    let v: Value = serde_json::from_str(data)?;
-    Ok(v[0]["choices"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|c| c.get(1).or(Some(c)).and_then(Value::as_str).map(str::to_owned))
-        .collect())
-}
-
 #[derive(Deserialize)]
 pub struct Queue {
     #[serde(default)]
@@ -537,9 +486,6 @@ pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) 
     let langs: Vec<&str> = LANGS.iter().map(|l| l.0).filter(|c| q.langs.iter().any(|x| x == c)).collect();
     if langs.is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "pick at least one language"));
-    }
-    if config(&st).await.url.is_empty() {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "set the film-sub server URL first"));
     }
     let source = q.source.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("auto");
     if source != "auto" && !SUB_LANGS.contains(&source) {

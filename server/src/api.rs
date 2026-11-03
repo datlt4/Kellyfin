@@ -50,7 +50,6 @@ pub fn router(st: AppState) -> Router {
         .route("/admin/upscale/jobs/{id}", delete(upscale::delete_job))
         .route("/admin/narration", get(narration::overview))
         .route("/admin/narration/config", put(narration::save_config))
-        .route("/admin/narration/check", get(narration::check))
         .route("/admin/narration/token", post(narration::new_token))
         .route("/admin/narration/jobs", post(narration::queue))
         .route("/admin/narration/jobs/{id}", delete(narration::delete_job))

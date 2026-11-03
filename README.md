@@ -187,15 +187,15 @@ trained models as `upscaler/models/<name>.sh` scripts (see the README there).
 ## Narration (thuyết minh)
 
 Needs a machine with an NVIDIA GPU for the services (Whisper, Argos/LibreTranslate, VieNeu-TTS behind one nginx)
-and the `kellyfin-narrator` worker; `narrator/film-sub/` starts all of them (details in `narrator/README.md`):
+and the `kellyfin-narrator` worker; `narrator/docker-compose.yml` starts all of them (details in `narrator/README.md`):
 
 ```sh
-cd narrator/film-sub
+cd narrator
 cp .env.example .env    # KELLYFIN_URL, and KELLYFIN_NARRATOR_TOKEN from Settings → Narration
 docker compose up -d
 ```
 
-Enter `http://<GPU machine>:8080` in **Settings → Narration**, press **Check server**, then queue a library there
+The worker connects to Kellyfin by itself and reports in **Settings → Narration** whether each service answers; queue a library there
 (spoken language: detect, or pick one) or one video with **Narration** on its page. Per video: subtitles in the spoken
 language (the video's own, else Whisper) → English, Vietnamese and Chinese subtitles (Argos) → Vietnamese voice
 (VieNeu) and Chinese voice (edge-tts, needs Internet) → mixed over the ducked original sound. The results live in

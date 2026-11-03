@@ -3,7 +3,7 @@
 #   cp .env.example .env      # set KELLYFIN_URL and KELLYFIN_NARRATOR_TOKEN (Kellyfin: Settings -> Narration)
 #   docker compose up -d
 #
-# Everything is reached through nginx on one port (8080) — that is the URL to enter in Settings -> Narration:
+# Everything is reached through nginx on one port (8080); the worker uses it as http://nginx:
 #   /whisper/      faster-whisper (model "medium" built in)        POST /whisper/v1/transcribe, GET /whisper/health
 #   /translate/    LibreTranslate / Argos (languages below)       POST /translate/translate, /translate/detect
 #   /gradio_api/   VieNeu-TTS, two instances, sticky by cookie    (Vietnamese voices)

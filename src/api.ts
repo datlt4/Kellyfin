@@ -72,17 +72,17 @@ export type UpscaleOverview = {
     progress: number; error: string | null; worker: string | null; height: number | null; updated_at: number;
   }[];
 };
-export type NarrationConfig = { url: string; voice_vi: string; voice_zh: string };
+export type NarrationConfig = { voice_vi: string; voice_zh: string };
+export type NarrationCheck = { name: string; ok: boolean; detail: string };
 export type NarrationOverview = {
   config: NarrationConfig;
   token: string;
-  workers: { name: string; seen_secs_ago: number }[];
+  workers: { name: string; seen_secs_ago: number; checks: NarrationCheck[]; voices: string[] }[];
   jobs: {
     id: number; item_id: number; title: string; library: string; source: string; langs: string; status: string;
     stage: number; step: string | null; progress: number; error: string | null; worker: string | null; updated_at: number;
   }[];
 };
-export type NarrationCheck = { checks: { name: string; ok: boolean; detail: string }[]; voices: string[] };
 export type ScanStatus = { running: boolean; phase: string; done: number; total: number; error: string | null; finished_at: number | null };
 
 export const isTauri = "__TAURI_INTERNALS__" in window;
@@ -324,10 +324,13 @@ export function fmtRes(h: number | null, w: number | null) {
   return p >= 2000 ? "4K" : `${p}p`;
 }
 
-/** Checks the film-sub services; throws with the failing ones so nothing is queued against a dead server. */
-export async function checkNarration(): Promise<NarrationCheck> {
-  const c = await api<NarrationCheck>("/admin/narration/check");
-  const bad = c.checks.filter((x) => !x.ok);
-  if (bad.length) throw new Error(`film-sub server not ready: ${bad.map((x) => `${x.name}: ${x.detail}`).join("; ")}`);
-  return c;
+/** What the narration workers report about the film-sub services; throws unless one of them has all of them up. */
+export async function checkNarration(): Promise<NarrationOverview> {
+  const ov = await api<NarrationOverview>("/admin/narration");
+  if (!ov.workers.length) throw new Error("No narration worker is online (start kellyfin-narrator in narrator/film-sub).");
+  if (!ov.workers.some((w) => w.checks.length && w.checks.every((c) => c.ok))) {
+    const bad = ov.workers[0].checks.filter((c) => !c.ok);
+    throw new Error(`film-sub services not ready: ${bad.map((c) => `${c.name}: ${c.detail}`).join("; ") || "no report yet, wait a minute"}`);
+  }
+  return ov;
 }

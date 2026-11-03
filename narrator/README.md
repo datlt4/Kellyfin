@@ -17,23 +17,24 @@ Per video, in four stages (shown in **Settings → Narration → Queue**):
 On a machine with an NVIDIA GPU (Docker + NVIDIA Container Toolkit, ~10 GB of GPU memory):
 
 ```sh
-cd narrator/film-sub
+cd narrator
 cp .env.example .env    # KELLYFIN_URL, and KELLYFIN_NARRATOR_TOKEN from Kellyfin: Settings -> Narration
 docker compose up -d
 ```
 
-`film-sub/` starts Whisper, Argos, VieNeu (two instances) and EasyOCR behind nginx on port **8080**, plus this
-worker. In Kellyfin, **Settings → Narration**: enter `http://<this machine>:8080`, **Save**, **Check server** (every
-service must show ✓). Then queue a library there, or one video with **Narration** on its page.
+This starts Whisper, Argos, VieNeu (two instances) and EasyOCR behind nginx on port **8080**, plus this worker.
+The worker connects to Kellyfin by itself — Kellyfin needs no address for it — and reports with every poll whether
+each service answers: **Settings → Narration → Workers online** shows ✓/✗ per service. Then queue a library there,
+or one video with **Narration** on its page.
 
 The worker only makes outgoing requests (to Kellyfin and to the services), like the AI upscale worker. It can also
-run on its own (`docker build -t kellyfin-narrator .`) against film-sub services elsewhere: set `KELLYFIN_URL`,
-`KELLYFIN_NARRATOR_TOKEN`, and optionally `FILMSUB_URL` (otherwise the URL from Kellyfin's settings is used).
+run on its own (`docker build -t kellyfin-narrator .`) against the services elsewhere: set `KELLYFIN_URL`,
+`KELLYFIN_NARRATOR_TOKEN` and `FILMSUB_URL` (default `http://nginx`).
 
 Other settings (environment): `WORKER_NAME`, `POLL_SECONDS` (15), `WORK_DIR`, `TRANSLATE_WORKERS` (6),
 `EDGE_TTS_PARALLEL` (12).
 
 ## Languages
 
-Whisper hears many languages; translation needs an Argos model for the spoken language. `film-sub` loads
-`en,vi,zh,ja,ko,ms,es` — add codes to `LT_LOAD_ONLY` in `film-sub/docker-compose.yml` (e.g. `de,fr`) for others.
+Whisper hears many languages; translation needs an Argos model for the spoken language. The compose loads
+`en,vi,zh,ja,ko,ms,es` — add codes to `LT_LOAD_ONLY` in `docker-compose.yml` (e.g. `de,fr`) for others.

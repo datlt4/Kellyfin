@@ -2,7 +2,7 @@ import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
 import {
   activeServer, api, ApiError, appVersion, fmtClock, img, isTauri, refreshUser, serverVersion, upload, user,
-  checkNarration, type Info, type Lib, type LibRow, type NarrationCheck, type NarrationConfig, type NarrationOverview, type ScanStatus, type UpscaleOverview, type UserRow,
+  checkNarration, type Info, type Lib, type LibRow, type NarrationConfig, type NarrationOverview, type ScanStatus, type UpscaleOverview, type UserRow,
 } from "../api";
 import FolderPicker from "../components/FolderPicker";
 import { applyUpdate, checkUpdate, updateAvailable, updateProgress } from "../update";
@@ -611,10 +611,15 @@ function Stages(props: { status: string; stage: number }) {
 function Narration() {
   const [ov, { refetch }] = createResource(() => api<NarrationOverview>("/admin/narration"));
   const [libs] = createResource(() => api<Lib[]>("/libraries"));
-  const [cfg, setCfg] = createSignal<NarrationConfig>({ url: "", voice_vi: "", voice_zh: "" });
-  createEffect(on(() => ov()?.config, (c) => c && setCfg(c), { defer: false }));
-  const [check, setCheck] = createSignal<NarrationCheck | null>(null);
-  const [checking, setChecking] = createSignal(false);
+  const [cfg, setCfg] = createSignal<NarrationConfig>({ voice_vi: "", voice_zh: "" });
+  // Fill the form once: the overview refreshes every few seconds and must not overwrite what is being typed.
+  let filled = false;
+  createEffect(on(() => ov()?.config, (c) => {
+    if (c && !filled) {
+      filled = true;
+      setCfg(c);
+    }
+  }));
   const [lib, setLib] = createSignal("");
   const [source, setSource] = createSignal("auto");
   const [langs, setLangs] = createSignal<string[]>(["vi", "zh"]);
@@ -626,23 +631,12 @@ function Narration() {
     e.preventDefault();
     act.run(async () => { await api("/admin/narration/config", { method: "PUT", body: JSON.stringify(cfg()) }); refetch(); }, "Saved");
   };
-  // Checks the URL as typed: saved first, since the server does the checking.
-  const runCheck = () => {
-    setChecking(true);
-    return act.run(async () => {
-      setCheck(null);
-      await api("/admin/narration/config", { method: "PUT", body: JSON.stringify(cfg()) });
-      const c = await api<NarrationCheck>("/admin/narration/check");
-      setCheck(c);
-      refetch();
-      if (c.checks.some((x) => !x.ok)) throw new Error("Some film-sub services do not answer (see above).");
-    }, "Every service answers.").finally(() => setChecking(false));
-  };
+  const voices = () => [...new Set((ov()?.workers ?? []).flatMap((w) => w.voices))];
   const toggleLang = (code: string) => setLangs(langs().includes(code) ? langs().filter((l) => l !== code) : [...langs(), code]);
   const queue = (e: Event) => {
     e.preventDefault();
     act.run(async () => {
-      setCheck(await checkNarration());
+      await checkNarration();
       const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: Number(lib()), source: source(), langs: langs() }) });
       refetch();
       return n;
@@ -657,29 +651,19 @@ function Narration() {
           A worker next to the film-sub services makes subtitles in the spoken language (Whisper) when a video has none,
           translates them into English, Vietnamese and Chinese (Argos), reads them out (VieNeu for Vietnamese, edge-tts
           for Chinese) and mixes the voice over the original sound. The result becomes an extra audio track and
-          subtitles; the video files are never changed. Setup: <code>narrator/README.md</code>.
+          subtitles; the video files are never changed. The worker connects to Kellyfin by itself and reports whether
+          the services answer. Setup: <code>narrator/README.md</code>.
         </p>
-        <label>film-sub server URL
-          <input value={cfg().url} onInput={(e) => set("url", e.currentTarget.value)} placeholder="http://192.168.0.182:8080" inputmode="url" autocapitalize="off" />
-        </label>
         <label>Vietnamese voice (VieNeu)
           <input value={cfg().voice_vi} onInput={(e) => set("voice_vi", e.currentTarget.value)} list="vieneu-voices" />
-          <datalist id="vieneu-voices"><For each={check()?.voices}>{(v) => <option value={v} />}</For></datalist>
+          <datalist id="vieneu-voices"><For each={voices()}>{(v) => <option value={v} />}</For></datalist>
         </label>
         <label>Chinese voice (edge-tts)
           <input value={cfg().voice_zh} onInput={(e) => set("voice_zh", e.currentTarget.value)} placeholder="zh-CN-XiaoxiaoNeural" />
         </label>
         <div class="row-btns">
           <button class="btn primary">Save</button>
-          <button type="button" class="btn" onClick={runCheck} disabled={!cfg().url.trim() || checking()}>{checking() ? "Checking…" : "Check server"}</button>
         </div>
-        <Show when={check()}>
-          {(c) => (
-            <For each={c().checks}>
-              {(x) => <p class={x.ok ? "ok" : "error"}>{x.ok ? "✓" : "✗"} {x.name} <span class="muted small">· {x.detail.slice(0, 160)}</span></p>}
-            </For>
-          )}
-        </Show>
         <act.Note />
       </form>
       <section class="panel">
@@ -695,7 +679,14 @@ function Narration() {
         </div>
         <h3 class="sub-title">Workers online</h3>
         <For each={ov()?.workers} fallback={<p class="muted">No worker has checked in during the last 2 minutes.</p>}>
-          {(w) => <p><b>{w.name}</b> <span class="muted">· {w.seen_secs_ago}s ago</span></p>}
+          {(w) => (
+            <>
+              <p><b>{w.name}</b> <span class="muted">· last seen {w.seen_secs_ago}s ago</span></p>
+              <For each={w.checks} fallback={<p class="muted small">No service report yet.</p>}>
+                {(x) => <p class={x.ok ? "ok" : "error"}>{x.ok ? "✓" : "✗"} {x.name} <span class="muted small">· {x.detail.slice(0, 160)}</span></p>}
+              </For>
+            </>
+          )}
         </For>
       </section>
       <form class="panel form" onSubmit={queue}>
