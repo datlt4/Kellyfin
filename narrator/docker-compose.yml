@@ -126,7 +126,7 @@ services:
   # tracks back. It only connects out; the video files on the Kellyfin server are never changed.
   kellyfin-narrator:
     image: hienanh/kellyfin-narrator:latest
-    build: ..
+    build: .
     container_name: kellyfin-narrator
     restart: unless-stopped
     environment:
