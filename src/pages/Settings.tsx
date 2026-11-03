@@ -657,8 +657,15 @@ function Narration() {
           Kellyfin by itself and reports whether the services answer. Setup: <code>narrator/README.md</code>.
         </p>
         <label>Vietnamese voice (VieNeu)
-          <input value={cfg().voice_vi} onInput={(e) => set("voice_vi", e.currentTarget.value)} list="vieneu-voices" />
-          <datalist id="vieneu-voices"><For each={voices()}>{(v) => <option value={v} />}</For></datalist>
+          <Show
+            when={voices().length}
+            fallback={<input value={cfg().voice_vi} onInput={(e) => set("voice_vi", e.currentTarget.value)} placeholder="Ngọc Huyền (the list comes from a running worker)" />}
+          >
+            <select value={cfg().voice_vi} onChange={(e) => set("voice_vi", e.currentTarget.value)}>
+              <Show when={!voices().includes(cfg().voice_vi)}><option value={cfg().voice_vi}>{cfg().voice_vi || "Choose…"}</option></Show>
+              <For each={voices()}>{(v) => <option value={v}>{v}</option>}</For>
+            </select>
+          </Show>
         </label>
         <label>Chinese voice (edge-tts)
           <input value={cfg().voice_zh} onInput={(e) => set("voice_zh", e.currentTarget.value)} placeholder="zh-CN-XiaoxiaoNeural" />
@@ -671,7 +678,7 @@ function Narration() {
       <section class="panel">
         <h2>Worker</h2>
         <p class="muted">
-          The <code>kellyfin-narrator</code> service of <code>narrator/film-sub</code> (on the GPU machine) only connects
+          The <code>kellyfin-narrator</code> service of <code>narrator/docker-compose.yml</code> (on the GPU machine) only connects
           out. Put this in that folder's <code>.env</code> — with a Kellyfin address the GPU machine can reach — then run
           <code>docker compose up -d</code>:
         </p>
