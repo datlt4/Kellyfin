@@ -1,0 +1,137 @@
+# film-sub: the services Kellyfin's narration (thuyết minh) uses, plus its worker, on one NVIDIA GPU machine.
+#
+#   cp .env.example .env      # set KELLYFIN_URL and KELLYFIN_NARRATOR_TOKEN (Kellyfin: Settings -> Narration)
+#   docker compose up -d
+#
+# Everything is reached through nginx on one port (8080) — that is the URL to enter in Settings -> Narration:
+#   /whisper/      faster-whisper (model "medium" built in)        POST /whisper/v1/transcribe, GET /whisper/health
+#   /translate/    LibreTranslate / Argos (languages below)       POST /translate/translate, /translate/detect
+#   /gradio_api/   VieNeu-TTS, two instances, sticky by cookie    (Vietnamese voices)
+#   /ocr/          EasyOCR (burned-in subtitles; not used by the worker yet)
+# Models are baked into the images, so the containers start without downloading anything.
+# Needs Docker with the NVIDIA Container Toolkit; about 10 GB of GPU memory for Whisper + two VieNeu.
+
+name: film-sub
+
+services:
+  argos:
+    image: hienanh/argos:latest
+    container_name: fs-argos
+    restart: unless-stopped
+    environment:
+      - LT_HOST=0.0.0.0
+      - LT_PORT=5000
+      # Languages loaded at start; add codes (e.g. de,fr) to translate videos spoken in them.
+      - LT_LOAD_ONLY=en,vi,zh,ja,ko,ms,es
+      - LT_THREADS=8
+
+  whisper:
+    image: hienanh/whisper:latest
+    container_name: fs-whisper
+    restart: unless-stopped
+    environment:
+      - WHISPER_MODEL=medium
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  easyocr:
+    image: hienanh/easyocr:latest
+    container_name: fs-easyocr
+    restart: unless-stopped
+    environment:
+      - EASYOCR_LOAD_LANGS=vi
+      - EASYOCR_USE_GPU=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # VieNeu on the host network at fixed ports 7861/7862; nginx balances them and keeps a client on one instance
+  # (a Gradio call and its result must hit the same one).
+  vieneu1:
+    image: hienanh/vieneu:latest
+    container_name: vieneu-tts-gpu1
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - VIENEU_AUTOLOAD=1
+      - VIENEU_DEVICE=CUDA
+      - VIENEU_CONCURRENCY=1
+      - VIENEU_INSTANCE=1
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7861
+      - GRADIO_SHARE=0
+      - HF_HOME=/home/app/.cache/huggingface
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - PYTHONUNBUFFERED=1
+    shm_size: 2gb
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  vieneu2:
+    image: hienanh/vieneu:latest
+    container_name: vieneu-tts-gpu2
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - VIENEU_AUTOLOAD=1
+      - VIENEU_DEVICE=CUDA
+      - VIENEU_CONCURRENCY=1
+      - VIENEU_INSTANCE=2
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7862
+      - GRADIO_SHARE=0
+      - HF_HOME=/home/app/.cache/huggingface
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - PYTHONUNBUFFERED=1
+    shm_size: 2gb
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: fs-nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx:/etc/nginx-extra:ro
+    entrypoint: ["/etc/nginx-extra/entrypoint.sh"]
+    extra_hosts:
+      - "host-gateway:host-gateway"
+    depends_on: [argos, whisper, easyocr, vieneu1, vieneu2]
+
+  # Kellyfin's narration worker (../ in this repo): asks Kellyfin for jobs, fetches the original sound, calls the
+  # services above through nginx and edge-tts over the Internet (Chinese voice), sends subtitles and narration
+  # tracks back. It only connects out; the video files on the Kellyfin server are never changed.
+  kellyfin-narrator:
+    image: hienanh/kellyfin-narrator:latest
+    build: ..
+    container_name: kellyfin-narrator
+    restart: unless-stopped
+    environment:
+      - "KELLYFIN_URL=${KELLYFIN_URL:?set it in .env, e.g. http://192.168.1.10:8024}"
+      - "KELLYFIN_NARRATOR_TOKEN=${KELLYFIN_NARRATOR_TOKEN:?copy it from Kellyfin: Settings -> Narration}"
+      - WORKER_NAME=${WORKER_NAME:-film-sub}
+      - FILMSUB_URL=http://nginx
+    depends_on: [nginx]

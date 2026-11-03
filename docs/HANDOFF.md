@@ -102,7 +102,8 @@ src/                    SolidJS client
   components/           TopBar, Row (shelf), Card, Icon (SVG), FolderPicker
 src-tauri/              Tauri shell; src/proxy.rs = local header-adding proxy, src/update.rs = updates
 upscaler/               experimental GPU upscale worker (Python + ffmpeg), Dockerfile, GPU compose, models/
-narrator/               narration worker (Python: requests, numpy, edge-tts + ffmpeg), Dockerfile; runs in film-sub's compose
+narrator/               narration worker (Python: requests, numpy, edge-tts + ffmpeg), Dockerfile, README
+  film-sub/             compose for the whole GPU side (Whisper, Argos, VieNeu x2, EasyOCR, nginx :8080, the worker)
   android/apply.sh      patches the generated Android project (cleartext http, gradle repos)
 scripts/
   set-version.sh        sets the version in every manifest and lockfile
@@ -478,7 +479,8 @@ on the RTX 3060 in 13 s, uploaded over WireGuard, played as "AI · lanczos").
 Turns a video into one with a Vietnamese and/or Chinese voice-over, the way the owner did by hand for Transformers:
 Energon (method notes: `/mnt/das_8tb/metube_volume/NOTE_pipeline_sub_dich_tts_mux.md`, scripts in that folder).
 
-- **Where things run**: the film-sub stack on koi-pc (`/mnt/ssd_1tb/Downloads-Ubuntu/Miscellaneous/film-sub`,
+- **Where things run**: `narrator/film-sub/` in the repo is the compose for the GPU side (public `hienanh/*` images;
+  their sources are not in this repo). On koi-pc the owner's own copy runs (`/mnt/ssd_1tb/Downloads-Ubuntu/Miscellaneous/film-sub`,
   `http://192.168.0.182:8080`: `/whisper/`, `/translate/` (LibreTranslate/Argos), `/gradio_api/` (two VieNeu-TTS
   instances, sticky cookie), `/ocr/`) now also has the `kellyfin-narrator` service (`FILMSUB_URL=http://nginx`,
   token in that folder's `.env`). It only makes outgoing requests, like the AI upscale worker. Kellyfin's server
