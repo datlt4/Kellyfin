@@ -389,6 +389,9 @@ Registered in the dashboard (`http://<mabu>:7877`) on 2026-10-20:
 
 ## 6. Open items
 
+0. **Next round (owner's request, 2026-11-03)**: OCR node languages as one Select2-style multi-select (tags, filter)
+   of EasyOCR's languages instead of "main language + Also read"; new OCR nodes start with no language (not
+   Vietnamese); decide which tag the subtitles are in (likely the first).
 1. **Run the repair on the server** (Dashboard → Check → Fix): 6 wrong Jumong items; review the 39 others.
 1b. Start an upscale worker permanently on koi-pc (`upscaler/docker-compose.yml`) when
     trained models exist.
