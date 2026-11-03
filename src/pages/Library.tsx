@@ -1,6 +1,6 @@
 import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, Show } from "solid-js";
-import { api, fmtDuration, fmtRes, img, type Card, type Lib } from "../api";
+import { api, checkNarration, fmtDuration, fmtRes, img, user, type Card, type Lib } from "../api";
 import { ItemCard } from "../components/Card";
 import Icon from "../components/Icon";
 
@@ -78,6 +78,15 @@ export default function Library() {
     onCleanup(() => io.disconnect());
   };
 
+  // Admins: queue every video of this library for narration (Settings → Narration shows the progress).
+  async function narrate() {
+    const src = prompt("Spoken language of these videos: auto (detect), en, ko, ja, zh, de, fr, es…", "auto");
+    if (src === null) return;
+    await checkNarration();
+    const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: lib()!.id, source: src.trim() || "auto", langs: ["vi", "zh"] }) });
+    alert(`${n} videos queued. Progress: Settings → Narration.`);
+  }
+
   return (
     <div class="library">
       <div class="page-head">
@@ -86,6 +95,9 @@ export default function Library() {
           <span class="muted"><Show when={total() >= 0}>{total()} videos</Show></span>
         </div>
         <div class="head-tools">
+          <Show when={user()?.is_admin && lib()}>
+            <button class="btn small" onClick={() => narrate().catch((e) => alert(e.message))} title="Vietnamese and Chinese voice-over for every video">Narration</button>
+          </Show>
           <select value={sort()} onChange={(e) => setSort(e.currentTarget.value as "title" | "added")}>
             <option value="title">A – Z</option>
             <option value="added">Recently added</option>
