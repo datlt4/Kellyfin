@@ -148,6 +148,17 @@ impl Workers {
         self.0.lock().unwrap().insert(h.worker, Seen { at: Instant::now(), checks: h.checks, voices: h.voices });
     }
 
+    /// A busy worker does not poll; its progress reports keep it listed (with its last service checks).
+    fn alive(&self, name: &str) {
+        let mut m = self.0.lock().unwrap();
+        match m.get_mut(name) {
+            Some(w) => w.at = Instant::now(),
+            None => {
+                m.insert(name.to_owned(), Seen { at: Instant::now(), checks: vec![], voices: vec![] });
+            }
+        }
+    }
+
     fn online(&self) -> Vec<WorkerView> {
         let mut m = self.0.lock().unwrap();
         m.retain(|_, w| w.at.elapsed() < Duration::from_secs(120));
@@ -259,6 +270,12 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
     let worker = h.worker.clone();
     st.narration_workers.touch(h);
     let now = util::now();
+    // A worker asking for work has none: a job still marked as its own was cut off (restart), so it goes back.
+    sqlx::query("UPDATE narration_jobs SET status = 'queued', step = NULL, progress = 0, updated_at = ?2 WHERE status = 'running' AND worker = ?1")
+        .bind(&worker)
+        .bind(now)
+        .execute(&st.db)
+        .await?;
     let Some((job_id, item_id, source, langs)): Option<(i64, i64, String, String)> = sqlx::query_as(
         "UPDATE narration_jobs SET status = 'running', worker = ?1, stage = 0, step = 'starting', progress = 0, error = NULL,
            updated_at = ?2
@@ -349,14 +366,19 @@ pub struct Progress {
 
 pub async fn progress(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<i64>, Json(p): Json<Progress>) -> ApiResult<StatusCode> {
     worker_auth(&st, &headers).await?;
-    sqlx::query("UPDATE narration_jobs SET stage = ?, step = ?, progress = ?, updated_at = ? WHERE id = ? AND status = 'running'")
-        .bind(p.stage.clamp(0, 4))
-        .bind(p.step.chars().take(200).collect::<String>())
-        .bind(p.progress.clamp(0.0, 1.0))
-        .bind(util::now())
-        .bind(id)
-        .execute(&st.db)
-        .await?;
+    let worker: Option<Option<String>> = sqlx::query_scalar(
+        "UPDATE narration_jobs SET stage = ?, step = ?, progress = ?, updated_at = ? WHERE id = ? AND status = 'running' RETURNING worker",
+    )
+    .bind(p.stage.clamp(0, 4))
+    .bind(p.step.chars().take(200).collect::<String>())
+    .bind(p.progress.clamp(0.0, 1.0))
+    .bind(util::now())
+    .bind(id)
+    .fetch_optional(&st.db)
+    .await?;
+    if let Some(Some(w)) = worker {
+        st.narration_workers.alive(&w);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

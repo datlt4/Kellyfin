@@ -62,12 +62,27 @@ def kf_url(path):
     return f"{SERVER}/api{path}"
 
 
+def retried(fn):
+    """Kellyfin may restart (an update) while a job runs: try again for about a minute before giving up."""
+    def run(*a, **kw):
+        for attempt in range(6):
+            try:
+                return fn(*a, **kw)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                if attempt == 5:
+                    raise JobError(f"Kellyfin does not answer: {e}") from e
+                time.sleep(10)
+    return run
+
+
+@retried
 def kf_json(method, path, body=None):
     r = kf.request(method, kf_url(path), json=body, timeout=60)
     r.raise_for_status()
     return r.json() if r.content else None
 
 
+@retried
 def kf_download(path, dest):
     with kf.get(kf_url(path), stream=True, timeout=(30, 600)) as r:
         r.raise_for_status()
@@ -76,6 +91,7 @@ def kf_download(path, dest):
                 f.write(chunk)
 
 
+@retried
 def kf_upload(jid, name, src):
     with open(src, "rb") as f:
         kf.put(kf_url(f"/narrator/jobs/{jid}/files/{name}"), data=f, timeout=(30, 1800)).raise_for_status()
@@ -330,6 +346,7 @@ def process(job):
         except Exception:
             pass
 
+    @retried
     def existing(lang):
         r = kf.get(kf_url(f"/narrator/jobs/{jid}/subtitle/{subs[lang]}"), timeout=300)
         r.raise_for_status()
@@ -429,7 +446,11 @@ def health():
         return {"name": name, "ok": ok, "detail": str(detail)[:300]}
 
     def whisper_ok():
-        r = requests.get(f"{FILMSUB}/whisper/health", timeout=10)
+        # Whisper answers nothing while it transcribes (e.g. another job's request): busy, not down.
+        try:
+            r = requests.get(f"{FILMSUB}/whisper/health", timeout=20)
+        except requests.ReadTimeout:
+            return True, "busy (transcribing), reachable"
         r.raise_for_status()
         return True, r.text.strip()
 

@@ -31,7 +31,8 @@ The worker only makes outgoing requests (to Kellyfin and to the services), like 
 run on its own (`docker build -t kellyfin-narrator .`) against the services elsewhere: set `KELLYFIN_URL`,
 `KELLYFIN_NARRATOR_TOKEN` and `FILMSUB_URL` (default `http://nginx`).
 
-Other settings (environment): `WORKER_NAME`, `POLL_SECONDS` (15), `WORK_DIR`, `TRANSLATE_WORKERS` (6),
+Other settings (environment): `WORKER_NAME` (unique per worker: a worker asking for work gets back the jobs
+still marked as its own, i.e. cut off by a restart), `POLL_SECONDS` (15), `WORK_DIR`, `TRANSLATE_WORKERS` (6),
 `EDGE_TTS_PARALLEL` (12).
 
 ## Languages
