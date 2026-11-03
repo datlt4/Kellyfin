@@ -265,6 +265,11 @@ def tts_vi(base, srt, voice, dest, on_progress):
     vn.speak(srt, voice, dest, on_progress)
 
 
+def speakable(text):
+    """Whether a line has anything to read: translation can leave lines of punctuation only (".", "…")."""
+    return any(ch.isalnum() for ch in text)
+
+
 def tts_zh(cues, voice, duration, dest, tmp, on_progress):
     import edge_tts
 
@@ -284,24 +289,34 @@ def tts_zh(cues, voice, duration, dest, tmp, on_progress):
         raise JobError(f"edge-tts does not answer (it needs Internet access): {e}") from e
     voice_dir = os.path.join(tmp, "zh_voice")
     os.makedirs(voice_dir, exist_ok=True)
-    done = [0]
+    done, failed = [0], []
+    todo = [(i, c[2]) for i, c in enumerate(cues) if speakable(c[2])]
 
     async def all_cues():
         sem = asyncio.Semaphore(EDGE_PARALLEL)
 
         async def one(i, text):
             async with sem:
-                await synth(text, os.path.join(voice_dir, f"{i:05}.mp3"))
+                try:
+                    await synth(text, os.path.join(voice_dir, f"{i:05}.mp3"))
+                except JobError:
+                    failed.append(text)  # one odd line stays silent rather than failing the video
                 done[0] += 1
                 if done[0] % 20 == 0:
-                    on_progress(done[0] / len(cues))
+                    on_progress(done[0] / len(todo))
 
-        await asyncio.gather(*(one(i, c[2]) for i, c in enumerate(cues)))
+        await asyncio.gather(*(one(i, t) for i, t in todo))
 
     asyncio.run(all_cues())
+    if len(failed) > max(3, len(todo) // 10):
+        raise JobError(f"edge-tts failed on {len(failed)} of {len(todo)} lines, e.g. {failed[0][:40]!r}")
+    if failed:
+        log(f"edge-tts skipped {len(failed)} lines: {[t[:30] for t in failed]}")
     # Every cue on one 48 kHz stereo timeline as long as the video.
     buf = np.zeros(int((duration + 1) * SR) * 2, dtype=np.int32)
     for i, (start, _, _) in enumerate(cues):
+        if not os.path.isfile(os.path.join(voice_dir, f"{i:05}.mp3")):
+            continue
         pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", os.path.join(voice_dir, f"{i:05}.mp3"), "-f", "s16le",
                               "-ac", "2", "-ar", str(SR), "-"], capture_output=True, check=True).stdout
         a = np.frombuffer(pcm[: len(pcm) // 4 * 4], dtype=np.int16).astype(np.int32)
@@ -397,7 +412,7 @@ def process(job):
 
         # 3. Voice per narration language; 4. (mux) happens on the Kellyfin server.
         for n, l in enumerate(langs):
-            srt = save(l, texts[l], upload=False)
+            srt = save(l, [c for c in texts[l] if speakable(c[2])], upload=False)
             voice_wav = os.path.join(tmp, f"{l}.voice.wav")
             label = f"Reading {l} aloud ({'VieNeu' if l == 'vi' else 'edge-tts'})"
             step(3, label, n / len(langs))
