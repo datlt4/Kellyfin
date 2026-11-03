@@ -1,4 +1,5 @@
 import { createSignal, For, Show } from "solid-js";
+import Select from "../components/Select";
 import { serverVersion } from "../api";
 import {
   activeServer, appVersion, authToken, HERE, isTauri, login, probeServer, restore, savedServers, saveServers, unreachable, useServer, type ServerProfile,
@@ -131,10 +132,8 @@ export default function Login() {
             <label>
               Server
               <div class="server-pick">
-                <select value={activeServer()?.id ?? ""} onChange={(e) => pick(e.currentTarget.value)}>
-                  <Show when={!activeServer()}><option value="">Choose a server</option></Show>
-                  <For each={servers()}>{(s) => <option value={s.id}>{s.name}{s.headers.length ? " 🔒" : ""}</option>}</For>
-                </select>
+                <Select value={activeServer()?.id ?? ""} onChange={pick} placeholder="Choose a server"
+                  options={servers().map((s) => ({ value: s.id, label: `${s.name}${s.headers.length ? " 🔒" : ""}` }))} />
                 <Show when={activeServer() && activeServer()!.id !== HERE}><button type="button" class="btn small" onClick={() => setEditing(activeServer())}>Edit</button></Show>
                 <button type="button" class="btn small" onClick={() => setEditing("new")}>+ Add</button>
               </div>

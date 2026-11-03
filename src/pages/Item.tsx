@@ -4,6 +4,7 @@ import { api, checkNarration, fmtClock, pickPreset, fmtDuration, fmtRes, img, st
 import { ItemCard, LibCard } from "../components/Card";
 import Row from "../components/Row";
 import Icon from "../components/Icon";
+import Select from "../components/Select";
 import { audioStreams, defaultAudio, defaultSub } from "../playback";
 
 export default function Item() {
@@ -108,16 +109,13 @@ export default function Item() {
             <dl class="tracks">
               <dt>Audio</dt>
               <dd>
-                <select value={audio() ?? ""} disabled={audioStreams(it()).length < 2} onChange={(e) => setAudio(Number(e.currentTarget.value))}>
-                  <For each={audioStreams(it())} fallback={<option>None</option>}>{(s) => <option value={s.index}>{streamLabel(s)}</option>}</For>
-                </select>
+                <Select value={String(audio() ?? "")} disabled={audioStreams(it()).length < 2} onChange={(v) => setAudio(Number(v))} placeholder="None"
+                  options={audioStreams(it()).map((s) => ({ value: String(s.index), label: streamLabel(s) }))} />
               </dd>
               <dt>Subtitles</dt>
               <dd>
-                <select value={sub()} onChange={(e) => setSub(e.currentTarget.value)}>
-                  <option value="off">Off</option>
-                  <For each={it().subtitles}>{(s) => <option value={s.key} disabled={!s.supported}>{subLabel(s)}</option>}</For>
-                </select>
+                <Select value={sub()} onChange={setSub}
+                  options={[{ value: "off", label: "Off" }, ...it().subtitles.map((s) => ({ value: s.key, label: subLabel(s), disabled: !s.supported }))]} />
               </dd>
             </dl>
             <div class="neighbours">

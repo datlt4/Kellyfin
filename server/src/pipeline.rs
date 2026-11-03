@@ -31,18 +31,25 @@ pub struct Node {
     /// ocr: share of the frame height, from the bottom, where the subtitles are.
     #[serde(default)]
     pub crop: f64,
+    /// ocr: more languages read in the same picture (e.g. English words inside Vietnamese subtitles); the
+    /// subtitles are in `lang`.
+    #[serde(default)]
+    pub also: Vec<String>,
     #[serde(default)]
     pub x: f64,
     #[serde(default)]
     pub y: f64,
 }
 
+/// Languages the film-sub EasyOCR service reads.
+pub const OCR_LANGS: &[&str] = &["vi", "en", "zh", "ja", "ko"];
+
 fn makes_subtitles(kind: &str) -> bool {
     matches!(kind, "whisper" | "ocr" | "subtitle" | "translate")
 }
 
 fn node(id: &str, kind: &str, lang: &str, x: f64, y: f64) -> Node {
-    Node { id: id.into(), kind: kind.into(), lang: lang.into(), engine: String::new(), voice: String::new(), crop: 0.0, x, y }
+    Node { id: id.into(), kind: kind.into(), lang: lang.into(), engine: String::new(), voice: String::new(), crop: 0.0, also: vec![], x, y }
 }
 
 fn voice(id: &str, engine: &str, x: f64, y: f64) -> Node {
@@ -98,7 +105,10 @@ pub fn validate(g: &Graph, langs: &[&str]) -> Result<Summary, String> {
         let lang_ok = langs.contains(&n.lang.as_str());
         match n.kind.as_str() {
             "whisper" if !(n.lang == "auto" || lang_ok) => return Err(format!("Whisper: unknown language {:?}", n.lang)),
-            "ocr" | "subtitle" | "translate" if !lang_ok => return Err(format!("{}: pick a language", n.kind)),
+            "ocr" if !OCR_LANGS.contains(&n.lang.as_str()) || n.also.iter().any(|l| !OCR_LANGS.contains(&l.as_str())) => {
+                return Err(format!("OCR reads {} only", OCR_LANGS.join(", ")))
+            }
+            "subtitle" | "translate" if !lang_ok => return Err(format!("{}: pick a language", n.kind)),
             "ocr" if !(n.crop == 0.0 || (0.05..=0.8).contains(&n.crop)) => return Err("OCR: the crop must be 5–80 % of the frame".into()),
             "voice" if !matches!(n.engine.as_str(), "vieneu" | "edge") => return Err("voice: pick VieNeu or edge-tts".into()),
             "whisper" | "ocr" | "subtitle" | "translate" | "voice" | "mux" => {}
@@ -210,6 +220,9 @@ mod tests {
         g.edges.retain(|(a, b)| !(a == "src" && b == "vvi"));
         g.edges.push(("zh".into(), "vvi".into()));
         assert!(validate(&g, LANGS).unwrap_err().contains("VieNeu"));
+        let (_, _, mut g) = builtins().remove(1);
+        g.nodes[0].also = vec!["fr".into()];
+        assert!(validate(&g, LANGS).unwrap_err().contains("OCR reads"));
         let (_, _, mut g) = builtins().remove(0);
         g.nodes.retain(|n| n.kind != "whisper");
         g.edges.retain(|(a, _)| a != "src");

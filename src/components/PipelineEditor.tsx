@@ -1,5 +1,6 @@
-import { createSignal, For, Index, Show } from "solid-js";
+import { createSignal, For, Index, onCleanup, Show } from "solid-js";
 import type { PipeGraph, PipeNode } from "../api";
+import Select from "./Select";
 
 /** Narration pipeline canvas: drag nodes by their title, drag from a node's right dot to another's left dot to wire
  *  them, click a wire to remove it. The server checks the graph when it is saved or queued. */
@@ -10,6 +11,9 @@ export const PIPE_LANGS: [string, string][] = [
   ["id", "Indonesian"], ["ms", "Malay"],
 ];
 
+/** What the film-sub EasyOCR reads (server: pipeline::OCR_LANGS). */
+const OCR_LANGS = ["vi", "en", "zh", "ja", "ko"];
+const langName = (c: string) => PIPE_LANGS.find(([k]) => k === c)?.[1] ?? c;
 const W = 210; // node width
 const PORT_Y = 20; // port height from the node's top
 
@@ -32,7 +36,13 @@ function fits(from: PipeNode, to: PipeNode) {
   return (to.type === "translate" || to.type === "voice") && makesSubs(from.type);
 }
 
-export default function PipelineEditor(props: { graph: PipeGraph; onChange?: (g: PipeGraph) => void; voices?: string[] }) {
+export default function PipelineEditor(props: {
+  graph: PipeGraph;
+  onChange?: (g: PipeGraph) => void;
+  /** VieNeu preset voices and edge-tts voice names, as the workers report them. */
+  voices?: string[];
+  edgeVoices?: string[];
+}) {
   const ro = () => !props.onChange;
   const g = () => props.graph;
   const set = (next: PipeGraph) => props.onChange?.(next);
@@ -40,6 +50,15 @@ export default function PipelineEditor(props: { graph: PipeGraph; onChange?: (g:
   const patch = (id: string, p: Partial<PipeNode>) => set({ ...g(), nodes: g().nodes.map((n) => (n.id === id ? { ...n, ...p } : n)) });
   let board!: HTMLDivElement;
   const [wire, setWire] = createSignal<{ from: string; x: number; y: number } | null>(null);
+  const [full, setFull] = createSignal(false);
+  const onEsc = (e: KeyboardEvent) => e.key === "Escape" && !document.querySelector(".sel-pop") && setFull(false);
+  window.addEventListener("keydown", onEsc);
+  onCleanup(() => window.removeEventListener("keydown", onEsc));
+  /** Language of the subtitles a node receives ("" when Whisper detects it). */
+  const inputLang = (id: string): string => {
+    const from = byId(g().edges.find(([, b]) => b === id)?.[0] ?? "");
+    return !from || from.lang === "auto" ? "" : (from.lang ?? "");
+  };
 
   const at = (e: PointerEvent) => {
     const r = board.getBoundingClientRect();
@@ -101,23 +120,29 @@ export default function PipelineEditor(props: { graph: PipeGraph; onChange?: (g:
     h: Math.max(340, ...g().nodes.map((n) => n.y + 180)),
   });
 
-  const langSelect = (n: PipeNode, auto = false) => (
-    <select value={n.lang ?? ""} disabled={ro()} onChange={(e) => patch(n.id, { lang: e.currentTarget.value })}>
-      <Show when={auto}><option value="auto">Detect the language</option></Show>
-      <For each={PIPE_LANGS}>{([c, l]) => <option value={c}>{l}</option>}</For>
-    </select>
+  const langSelect = (n: PipeNode, auto = false, only?: string[]) => (
+    <Select value={n.lang ?? ""} disabled={ro()} onChange={(v) => patch(n.id, { lang: v })} options={[
+      ...(auto ? [{ value: "auto", label: "Detect the language" }] : []),
+      ...PIPE_LANGS.filter(([c]) => !only || only.includes(c)).map(([c, l]) => ({ value: c, label: l })),
+    ]} />
   );
+  const edgeFor = (n: PipeNode) => {
+    const l = inputLang(n.id);
+    return (props.edgeVoices ?? []).filter((v) => !l || v.startsWith(`${l}-`));
+  };
 
   return (
-    <div class="pipe">
-      <Show when={!ro()}>
-        <div class="pipe-palette">
+    <div class="pipe" classList={{ full: full() }}>
+      <div class="pipe-palette">
+        <Show when={!ro()}>
           <span class="muted small">Add:</span>
           <For each={["whisper", "ocr", "subtitle", "translate", "voice", "mux"] as PipeNode["type"][]}>
             {(t) => <button type="button" class="btn small" onClick={() => add(t)}>{TITLES[t].split(" (")[0]}</button>}
           </For>
-        </div>
-      </Show>
+        </Show>
+        <span class="grow" />
+        <button type="button" class="btn small" onClick={() => setFull(!full())}>{full() ? "Close full screen (Esc)" : "⛶ Full screen"}</button>
+      </div>
       <div class="pipe-board" ref={board}>
         <div class="pipe-canvas" style={{ width: `${extent().w}px`, height: `${extent().h}px` }}>
           <svg class="pipe-wires" width={extent().w} height={extent().h}>
@@ -152,7 +177,19 @@ export default function PipelineEditor(props: { graph: PipeGraph; onChange?: (g:
                   <Show when={n().type === "whisper"}>{langSelect(n(), true)}</Show>
                   <Show when={n().type === "subtitle" || n().type === "translate"}>{langSelect(n())}</Show>
                   <Show when={n().type === "ocr"}>
-                    {langSelect(n())}
+                    {langSelect(n(), false, OCR_LANGS)}
+                    <div class="pipe-also">
+                      <span class="muted">Also read:</span>
+                      <For each={OCR_LANGS.filter((l) => l !== n().lang)}>
+                        {(l) => (
+                          <label class="check">
+                            <input type="checkbox" disabled={ro()} checked={(n().also ?? []).includes(l)}
+                              onChange={(e) => patch(n().id, { also: e.currentTarget.checked ? [...(n().also ?? []), l] : (n().also ?? []).filter((x) => x !== l) })} />
+                            {langName(l)}
+                          </label>
+                        )}
+                      </For>
+                    </div>
                     <label class="pipe-inline">
                       Bottom
                       <input type="number" min="5" max="80" step="5" value={Math.round((n().crop ?? 0.35) * 100)} disabled={ro()}
@@ -161,18 +198,18 @@ export default function PipelineEditor(props: { graph: PipeGraph; onChange?: (g:
                     </label>
                   </Show>
                   <Show when={n().type === "voice"}>
-                    <select value={n().engine ?? "edge"} disabled={ro()} onChange={(e) => patch(n().id, { engine: e.currentTarget.value, voice: "" })}>
-                      <option value="vieneu">VieNeu (Vietnamese)</option>
-                      <option value="edge">edge-tts (any language)</option>
-                    </select>
+                    <Select value={n().engine ?? "edge"} disabled={ro()} onChange={(v) => patch(n().id, { engine: v, voice: "" })} options={[
+                      { value: "vieneu", label: "VieNeu (Vietnamese)" },
+                      { value: "edge", label: "edge-tts (any language)" },
+                    ]} />
                     <Show
-                      when={n().engine === "vieneu" && props.voices?.length}
+                      when={(n().engine === "vieneu" ? props.voices : edgeFor(n()))?.length}
                       fallback={<input value={n().voice ?? ""} disabled={ro()} placeholder="default voice" onChange={(e) => patch(n().id, { voice: e.currentTarget.value.trim() })} />}
                     >
-                      <select value={n().voice ?? ""} disabled={ro()} onChange={(e) => patch(n().id, { voice: e.currentTarget.value })}>
-                        <option value="">Default (Settings)</option>
-                        <For each={props.voices}>{(v) => <option value={v}>{v}</option>}</For>
-                      </select>
+                      <Select value={n().voice ?? ""} disabled={ro()} onChange={(v) => patch(n().id, { voice: v })} options={[
+                        { value: "", label: n().engine === "vieneu" ? "Default (Settings)" : "Default for the language" },
+                        ...((n().engine === "vieneu" ? props.voices : edgeFor(n())) ?? []).map((v) => ({ value: v, label: v })),
+                      ]} />
                     </Show>
                   </Show>
                   <Show when={n().type === "mux"}><span class="muted small">One audio track per voice, over the ducked original sound</span></Show>

@@ -684,3 +684,26 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
   border: 2px solid var(--bg); touch-action: none; }
 .pipe-port.in { left: -7px; background: var(--muted); }
 .pipe-port.out { right: -7px; cursor: crosshair; }
+
+/* Select with a filter box (components/Select.tsx). */
+.sel { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; text-align: left;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; color: var(--text); }
+.sel:disabled { opacity: 0.6; cursor: default; }
+.sel-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sel-caret { color: var(--muted); font-size: 11px; }
+.form label .sel, .pipe-body .sel { width: 100%; }
+.pipe-body .sel { padding: 4px 6px; font-size: 12px; }
+.sel-pop { position: fixed; z-index: 1000; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); padding: 6px; display: flex; flex-direction: column; gap: 6px; }
+.sel-filter { width: 100%; padding: 6px 8px; font-size: 13px; }
+.sel-list { max-height: 260px; overflow: auto; display: flex; flex-direction: column; }
+.sel-opt { padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.sel-opt.hi { background: rgba(255, 255, 255, 0.08); }
+.sel-opt.on { color: var(--accent-2); font-weight: 600; }
+.sel-opt.off { opacity: 0.4; pointer-events: none; }
+.sel-empty { padding: 8px 10px; }
+.pipe-also { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: center; }
+.pipe-also label.check { display: inline-flex; flex-direction: row; align-items: center; font-size: 12px; gap: 4px; }
+.pipe-body .pipe-also input { width: auto; padding: 0; }
+.pipe.full { position: fixed; inset: 0; z-index: 900; background: var(--bg); padding: 12px; display: flex; flex-direction: column; }
+.pipe.full .pipe-board { flex: 1; max-height: none; }

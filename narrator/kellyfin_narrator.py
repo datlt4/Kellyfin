@@ -370,9 +370,11 @@ DIFF_HI = 4.0      # mean change (0-255) of the subtitle band, at 320 px wide, t
 RECHECK = 10       # frames (5 s at 2 fps) after which a shown line is looked at again anyway
 
 
-def ocr(base, video, lang, crop, duration, on_progress):
+def ocr(base, video, langs, crop, duration, on_progress):
     """Lines from the bottom `crop` of the frame, sampled twice a second; a frame is read only when the band
-    changed. Lines over 60 % alike are one line; shorter than 0.7 s dropped; the same text within 2 s merged."""
+    changed, once per language in `langs` (overlapping boxes keep the surer reading). Lines over 60 % alike are one
+    line; shorter than 0.7 s dropped; the same text within 2 s merged."""
+    lang = langs[0]
     need(base, "/ocr/health", "EasyOCR")
     import io
     from PIL import Image
@@ -389,13 +391,27 @@ def ocr(base, video, lang, crop, duration, on_progress):
     size, step = ow * oh * 3, max(1, ow // 320)
     s = requests.Session()
 
+    def overlap(a, b):
+        ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+        small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])) or 1
+        return ix * iy / small
+
     def read(frame):
         buf = io.BytesIO()
         Image.frombytes("RGB", (ow, oh), frame).save(buf, "JPEG", quality=92)
-        r = s.post(f"{base}/ocr/ocr", files={"file": ("f.jpg", buf.getvalue(), "image/jpeg")},
-                   data={"lang": lang, "min_conf": "0.4"}, timeout=120)
-        r.raise_for_status()
-        found = sorted(r.json().get("results") or [], key=lambda x: (x["bbox"][1] // 20, x["bbox"][0]))
+        found = []
+        for l in langs:
+            r = s.post(f"{base}/ocr/ocr", files={"file": ("f.jpg", buf.getvalue(), "image/jpeg")},
+                       data={"lang": l, "min_conf": "0.4"}, timeout=120)
+            r.raise_for_status()
+            for x in r.json().get("results") or []:
+                same = next((k for k, y in enumerate(found) if overlap(x["bbox"], y["bbox"]) > 0.5), None)
+                if same is None:
+                    found.append(x)
+                elif x.get("conf", 0) > found[same].get("conf", 0):
+                    found[same] = x
+        found.sort(key=lambda x: (x["bbox"][1] // 20, x["bbox"][0]))
         return " ".join(x["text"].strip() for x in found if x["text"].strip() and not OCR_JUNK.search(x["text"])).strip()
 
     def alike(a, b):
@@ -502,81 +518,92 @@ def process(job):
             kf_download(f"/narrator/jobs/{jid}/{kind}", files[kind])
         return files[kind]
 
-    texts = {}  # node id -> (lang, cues)
-    try:
-        log(f"job {jid}: {job['title']} -> pipeline of {len(nodes)} nodes via {base}")
-        for nid in order:
-            n, kind = nodes[nid], nodes[nid]["type"]
-            lang = n.get("lang") or ""
-            if kind == "subtitle":
-                if lang not in subs:
-                    raise JobError(f"the video has no {lang} subtitles")
-                step(1, f"Using the video's {lang} subtitles")
+    texts = {}  # node id -> (lang, cues), made on demand: a source no output needs is never run
+
+    def produce(nid):
+        if nid in texts:
+            return texts[nid]
+        n, kind = nodes[nid], nodes[nid]["type"]
+        lang = n.get("lang") or ""
+        if kind == "subtitle":
+            if lang not in subs:
+                raise JobError(f"the video has no {lang} subtitles")
+            step(1, f"Using the video's {lang} subtitles")
+            texts[nid] = (lang, existing(lang))
+        elif kind in ("whisper", "ocr") and lang != "auto" and lang in subs:
+            step(1, f"Using the video's {lang} subtitles")
+            texts[nid] = (lang, existing(lang))
+        elif kind == "whisper":
+            audio = fetch("audio")
+            step(1, f"Transcribing {'the spoken language' if lang == 'auto' else lang} (Whisper)")
+            cues = whisper(base, audio, lang, tmp)
+            if lang == "auto":
+                lang = detect(base, cues)
+                log(f"job {jid}: spoken language {lang}")
+            texts[nid] = (lang, cues)
+            keep(lang, cues)
+        elif kind == "ocr":
+            video = fetch("video")
+            langs = [lang] + [l for l in n.get("also") or [] if l != lang]
+            label = f"Reading the burned-in {'+'.join(langs)} subtitles (OCR)"
+            step(1, label)
+            cues = ocr(base, video, langs, n.get("crop") or 0.35, duration, lambda f, label=label: step(1, label, f))
+            log(f"job {jid}: OCR found {len(cues)} {lang} lines")
+            texts[nid] = (lang, cues)
+            keep(lang, cues)
+        elif kind == "translate":
+            if lang in subs:  # the video has it: its input is not needed
+                step(2, f"Using the video's {lang} subtitles")
                 texts[nid] = (lang, existing(lang))
-            elif kind == "whisper":
-                if lang != "auto" and lang in subs:
-                    step(1, f"Using the video's {lang} subtitles")
-                    texts[nid] = (lang, existing(lang))
-                else:
-                    audio = fetch("audio")
-                    step(1, f"Transcribing {'the spoken language' if lang == 'auto' else lang} (Whisper)")
-                    cues = whisper(base, audio, lang, tmp)
-                    if lang == "auto":
-                        lang = detect(base, cues)
-                        log(f"job {jid}: spoken language {lang}")
-                    texts[nid] = (lang, cues)
-                    keep(lang, cues)
-            elif kind == "ocr":
-                if lang in subs:
-                    step(1, f"Using the video's {lang} subtitles")
-                    texts[nid] = (lang, existing(lang))
-                else:
-                    video = fetch("video")
-                    label = f"Reading the burned-in {lang} subtitles (OCR)"
-                    step(1, label)
-                    cues = ocr(base, video, lang, n.get("crop") or 0.35, duration, lambda f, label=label: step(1, label, f))
-                    log(f"job {jid}: OCR found {len(cues)} {lang} lines")
-                    texts[nid] = (lang, cues)
-                    keep(lang, cues)
-            elif kind == "translate":
-                src, cues = texts[feeds[nid][0]]
-                if lang in subs:
-                    step(2, f"Using the video's {lang} subtitles")
-                    texts[nid] = (lang, existing(lang))
-                elif lang == src:
+            else:
+                src, cues = produce(feeds[nid][0])
+                if lang == src:
                     texts[nid] = (lang, cues)
                 else:
                     label = f"Translating {src} → {lang} (Argos)"
                     step(2, label)
                     texts[nid] = (lang, translate(base, cues, src, lang, lambda f, label=label: step(2, label, f)))
                     keep(lang, texts[nid][1])
-            elif kind == "voice":
-                lang, cues = texts[feeds[nid][0]]
-                cues = [c for c in cues if speakable(c[2])]
-                if not cues:
-                    raise JobError(f"no {lang} lines to read out")
-                if not duration:  # unprobed video: the timeline ends with the last line
-                    duration = max(c[1] for c in cues) + 1
-                wav = os.path.join(tmp, f"{lang}.voice.wav")
-                if n.get("engine") == "vieneu":
-                    label = "Reading vi aloud (VieNeu)"
-                    step(3, label)
-                    srt = os.path.join(tmp, f"{lang}.voice.srt")
-                    write_srt(cues, srt)
-                    tts_vi(base, srt, n.get("voice") or job["voice_vi"], wav, lambda f, label=label: step(3, label, f))
-                else:
-                    voice = n.get("voice") or (job["voice_zh"] if lang == "zh" else EDGE_VOICES.get(lang))
-                    if not voice:
-                        raise JobError(f"no edge-tts voice for {lang}: set one on the voice node")
-                    label = f"Reading {lang} aloud (edge-tts {voice})"
-                    step(3, label)
-                    tts_edge(cues, voice, duration, wav, tmp, lambda f, label=label: step(3, label, f))
-                flac = os.path.join(tmp, f"{lang}.voice.flac")
-                to_flac(wav, flac)
-                kf_upload(jid, f"{lang}.voice.flac", flac)
-                log(f"job {jid}: {lang} voice uploaded ({os.path.getsize(flac) >> 20} MB)")
-            if kind in STAGE:
-                done[STAGE[kind]] += 1
+        if kind in STAGE:
+            done[STAGE[kind]] += 1
+        return texts[nid]
+
+    try:
+        log(f"job {jid}: {job['title']} -> pipeline of {len(nodes)} nodes via {base}")
+        # Outputs: every translation and every source wired to nothing (a subtitle file); voices pull what they read.
+        used = {a for a, _ in g["edges"]}
+        for nid in order:
+            if nodes[nid]["type"] == "translate" or (nodes[nid]["type"] in ("whisper", "ocr") and nid not in used):
+                produce(nid)
+        for nid in order:
+            n = nodes[nid]
+            if n["type"] != "voice":
+                continue
+            lang, cues = produce(feeds[nid][0])
+            cues = [c for c in cues if speakable(c[2])]
+            if not cues:
+                raise JobError(f"no {lang} lines to read out")
+            if not duration:  # unprobed video: the timeline ends with the last line
+                duration = max(c[1] for c in cues) + 1
+            wav = os.path.join(tmp, f"{lang}.voice.wav")
+            if n.get("engine") == "vieneu":
+                label = "Reading vi aloud (VieNeu)"
+                step(3, label)
+                srt = os.path.join(tmp, f"{lang}.voice.srt")
+                write_srt(cues, srt)
+                tts_vi(base, srt, n.get("voice") or job["voice_vi"], wav, lambda f, label=label: step(3, label, f))
+            else:
+                voice = n.get("voice") or (job["voice_zh"] if lang == "zh" else EDGE_VOICES.get(lang))
+                if not voice:
+                    raise JobError(f"no edge-tts voice for {lang}: set one on the voice node")
+                label = f"Reading {lang} aloud (edge-tts {voice})"
+                step(3, label)
+                tts_edge(cues, voice, duration, wav, tmp, lambda f, label=label: step(3, label, f))
+            flac = os.path.join(tmp, f"{lang}.voice.flac")
+            to_flac(wav, flac)
+            kf_upload(jid, f"{lang}.voice.flac", flac)
+            log(f"job {jid}: {lang} voice uploaded ({os.path.getsize(flac) >> 20} MB)")
+            done[3] += 1
         kf_json("POST", f"/narrator/jobs/{jid}/done")
         log(f"job {jid}: handed to Kellyfin for the mux")
     finally:
@@ -585,7 +612,7 @@ def process(job):
 
 # ---------- service report sent with every poll ----------
 
-_report = {"at": 0.0, "edge_at": 0.0, "checks": [], "voices": [], "edge": None}
+_report = {"at": 0.0, "edge_at": 0.0, "checks": [], "voices": [], "edge": None, "edge_voices": []}
 
 
 def health():
@@ -641,6 +668,10 @@ def health():
 
             _report["edge"] = asyncio.run(asyncio.wait_for(go(), 20))
             _report["edge_at"] = now
+            try:
+                _report["edge_voices"] = sorted(v["ShortName"] for v in asyncio.run(asyncio.wait_for(edge_tts.list_voices(), 20)))
+            except Exception:
+                pass
         return _report["edge"], "Microsoft speech service reachable" if _report["edge"] else "no audio"
 
     checks = [probe("Whisper (subtitles)", whisper_ok), probe("EasyOCR (burned-in subtitles)", ocr_ok),
@@ -655,7 +686,8 @@ def main():
     while True:
         checks, voices = health()
         try:
-            r = kf.post(kf_url("/narrator/claim"), json={"worker": NAME, "checks": checks, "voices": voices}, timeout=60)
+            r = kf.post(kf_url("/narrator/claim"), json={"worker": NAME, "checks": checks, "voices": voices,
+                                                         "edge_voices": _report["edge_voices"]}, timeout=60)
             if r.status_code in (401, 403):
                 log("server refused the token (KELLYFIN_NARRATOR_TOKEN, Settings -> Narration)")
                 time.sleep(POLL * 4)

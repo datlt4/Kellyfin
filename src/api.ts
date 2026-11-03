@@ -81,6 +81,8 @@ export type PipeNode = {
   engine?: string;
   voice?: string;
   crop?: number;
+  /** ocr: more languages read in the picture. */
+  also?: string[];
   x: number;
   y: number;
 };
@@ -90,7 +92,7 @@ export type NarrationCheck = { name: string; ok: boolean; detail: string };
 export type NarrationOverview = {
   config: NarrationConfig;
   token: string;
-  workers: { name: string; seen_secs_ago: number; checks: NarrationCheck[]; voices: string[] }[];
+  workers: { name: string; seen_secs_ago: number; checks: NarrationCheck[]; voices: string[]; edge_voices?: string[] }[];
   jobs: {
     id: number; item_id: number; title: string; library: string; preset: string | null; source: string; langs: string; status: string;
     stage: number; step: string | null; progress: number; error: string | null; worker: string | null; updated_at: number;

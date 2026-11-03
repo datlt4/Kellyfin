@@ -295,6 +295,7 @@ struct Seen {
     at: Instant,
     checks: Vec<Check>,
     voices: Vec<String>,
+    edge_voices: Vec<String>,
 }
 
 #[derive(Default)]
@@ -302,7 +303,7 @@ pub struct Workers(Mutex<HashMap<String, Seen>>);
 
 impl Workers {
     fn touch(&self, h: Hello) {
-        self.0.lock().unwrap().insert(h.worker, Seen { at: Instant::now(), checks: h.checks, voices: h.voices });
+        self.0.lock().unwrap().insert(h.worker, Seen { at: Instant::now(), checks: h.checks, voices: h.voices, edge_voices: h.edge_voices });
     }
 
     /// A busy worker does not poll; its progress reports keep it listed (with its last service checks).
@@ -311,7 +312,7 @@ impl Workers {
         match m.get_mut(name) {
             Some(w) => w.at = Instant::now(),
             None => {
-                m.insert(name.to_owned(), Seen { at: Instant::now(), checks: vec![], voices: vec![] });
+                m.insert(name.to_owned(), Seen { at: Instant::now(), checks: vec![], voices: vec![], edge_voices: vec![] });
             }
         }
     }
@@ -326,6 +327,7 @@ impl Workers {
                 seen_secs_ago: w.at.elapsed().as_secs(),
                 checks: w.checks.clone(),
                 voices: w.voices.clone(),
+                edge_voices: w.edge_voices.clone(),
             })
             .collect();
         v.sort_by_key(|w| w.seen_secs_ago);
@@ -341,6 +343,8 @@ struct WorkerView {
     checks: Vec<Check>,
     /// VieNeu preset voices, for the voice picker.
     voices: Vec<String>,
+    /// edge-tts voice names (e.g. "en-US-AriaNeural"), for the voice nodes.
+    edge_voices: Vec<String>,
 }
 
 async fn token(st: &AppState) -> ApiResult<String> {
@@ -401,6 +405,8 @@ pub struct Hello {
     checks: Vec<Check>,
     #[serde(default)]
     voices: Vec<String>,
+    #[serde(default)]
+    edge_voices: Vec<String>,
 }
 
 #[derive(Serialize)]

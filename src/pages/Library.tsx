@@ -3,6 +3,7 @@ import { createEffect, createResource, createSignal, For, on, onCleanup, Show } 
 import { api, checkNarration, fmtDuration, fmtRes, img, pickPreset, user, type Card, type Lib } from "../api";
 import { ItemCard } from "../components/Card";
 import Icon from "../components/Icon";
+import Select from "../components/Select";
 
 const PAGE = 120;
 
@@ -98,10 +99,8 @@ export default function Library() {
           <Show when={user()?.is_admin && lib()}>
             <button class="btn small" onClick={() => narrate().catch((e) => alert(e.message))} title="Vietnamese and Chinese voice-over for every video">Narration</button>
           </Show>
-          <select value={sort()} onChange={(e) => setSort(e.currentTarget.value as "title" | "added")}>
-            <option value="title">A – Z</option>
-            <option value="added">Recently added</option>
-          </select>
+          <Select value={sort()} onChange={(v) => setSort(v as "title" | "added")}
+            options={[{ value: "title", label: "A – Z" }, { value: "added", label: "Recently added" }]} />
           {/* One button: shows the current view, a click moves to the next one. */}
           <button
             class="icon view-btn"

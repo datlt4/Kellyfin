@@ -6,6 +6,7 @@ import {
 } from "../api";
 import FolderPicker from "../components/FolderPicker";
 import PipelineEditor from "../components/PipelineEditor";
+import Select from "../components/Select";
 import { applyUpdate, checkUpdate, updateAvailable, updateProgress } from "../update";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -492,12 +493,17 @@ function Playback() {
       </p>
       <Show when={settings()}>
         <label>Hardware acceleration
-          <select name="transcode.hwaccel" value={settings()!["transcode.hwaccel"] ?? "auto"}>
-            <option value="auto">Auto — NVIDIA, else AMD/Intel, else CPU</option>
-            <option value="nvenc">NVENC (NVIDIA GPU)</option>
-            <option value="vaapi">VAAPI (AMD / Intel GPU)</option>
-            <option value="none">None — encode on the CPU</option>
-          </select>
+          {(() => {
+            const [hw, setHw] = createSignal(settings()!["transcode.hwaccel"] ?? "auto");
+            return (
+              <Select name="transcode.hwaccel" value={hw()} onChange={setHw} options={[
+                { value: "auto", label: "Auto — NVIDIA, else AMD/Intel, else CPU" },
+                { value: "nvenc", label: "NVENC (NVIDIA GPU)" },
+                { value: "vaapi", label: "VAAPI (AMD / Intel GPU)" },
+                { value: "none", label: "None — encode on the CPU" },
+              ]} />
+            );
+          })()}
         </label>
         <label>VAAPI device (AMD / Intel)<input name="transcode.device" value={settings()!["transcode.device"] ?? "/dev/dri/renderD128"} /></label>
       </Show>
@@ -546,15 +552,11 @@ function Upscale() {
       <form class="panel form" onSubmit={queue}>
         <h2>Upscale a library</h2>
         <label>Model
-          <select value={model()} onChange={(e) => setModel(e.currentTarget.value)}>
-            <For each={models()} fallback={<option value="">(start a worker first)</option>}>{(m) => <option value={m.name}>{m.name} — {m.description}</option>}</For>
-          </select>
+          <Select value={model() || models()[0]?.name || ""} onChange={setModel} placeholder="(start a worker first)"
+            options={models().map((m) => ({ value: m.name, label: `${m.name} — ${m.description}` }))} />
         </label>
         <label>Library
-          <select value={lib()} onChange={(e) => setLib(e.currentTarget.value)}>
-            <option value="">Choose…</option>
-            <For each={libs()}>{(l) => <option value={l.id}>{l.name} ({l.count})</option>}</For>
-          </select>
+          <Select value={lib()} onChange={setLib} options={(libs() ?? []).map((l) => ({ value: String(l.id), label: `${l.name} (${l.count})` }))} />
         </label>
         <button class="btn primary" disabled={!lib() || !models().length}>Queue</button>
         <p class="muted small">Single episodes: the “AI upscale” button on a video's page.</p>
@@ -593,7 +595,7 @@ function Upscale() {
 const STAGES = ["Subtitles", "Translate", "Voice (TTS)", "Mux (Kellyfin server)"];
 
 /** Built-in and saved pipelines; built-ins are read-only (duplicate them to change them). */
-function Pipelines(props: { voices: string[]; onSaved: () => void }) {
+function Pipelines(props: { voices: string[]; edgeVoices: string[]; onSaved: () => void }) {
   const [presets, { refetch }] = createResource(() => api<Preset[]>("/admin/narration/presets"));
   const [sel, setSel] = createSignal("whisper");
   const [draft, setDraft] = createSignal<{ name: string; graph: PipeGraph } | null>(null);
@@ -636,9 +638,7 @@ function Pipelines(props: { voices: string[]; onSaved: () => void }) {
         left dot to wire them, click a wire to remove it. A language the video already has subtitles in is reused.
       </p>
       <div class="row-btns">
-        <select value={sel()} onChange={(e) => setSel(e.currentTarget.value)}>
-          <For each={presets()}>{(p) => <option value={p.id}>{p.name}{p.builtin ? " (built-in)" : ""}</option>}</For>
-        </select>
+        <Select value={sel()} onChange={setSel} options={(presets() ?? []).map((p) => ({ value: p.id, label: `${p.name}${p.builtin ? " (built-in)" : ""}` }))} />
         <button type="button" class="btn small" onClick={duplicate} disabled={!draft()}>Duplicate</button>
         <Show when={current() && !current()!.builtin}>
           <button type="button" class="btn small primary" onClick={save}>Save</button>
@@ -654,6 +654,7 @@ function Pipelines(props: { voices: string[]; onSaved: () => void }) {
           <PipelineEditor
             graph={d().graph}
             voices={props.voices}
+            edgeVoices={props.edgeVoices}
             onChange={current()?.builtin ? undefined : (graph) => setDraft({ ...d(), graph })}
           />
         )}
@@ -725,10 +726,7 @@ function Narration() {
             when={voices().length}
             fallback={<input value={cfg().voice_vi} onInput={(e) => set("voice_vi", e.currentTarget.value)} placeholder="Ngọc Huyền (the list comes from a running worker)" />}
           >
-            <select value={cfg().voice_vi} onChange={(e) => set("voice_vi", e.currentTarget.value)}>
-              <Show when={!voices().includes(cfg().voice_vi)}><option value={cfg().voice_vi}>{cfg().voice_vi || "Choose…"}</option></Show>
-              <For each={voices()}>{(v) => <option value={v}>{v}</option>}</For>
-            </select>
+            <Select value={cfg().voice_vi} onChange={(v) => set("voice_vi", v)} options={voices().map((v) => ({ value: v, label: v }))} />
           </Show>
         </label>
         <label>Chinese voice (edge-tts)
@@ -762,19 +760,14 @@ function Narration() {
           )}
         </For>
       </section>
-      <Pipelines voices={voices()} onSaved={rePresets} />
+      <Pipelines voices={voices()} edgeVoices={[...new Set((ov()?.workers ?? []).flatMap((w) => w.edge_voices ?? []))]} onSaved={rePresets} />
       <form class="panel form" onSubmit={queue}>
         <h2>Narrate a library</h2>
         <label>Library
-          <select value={lib()} onChange={(e) => setLib(e.currentTarget.value)}>
-            <option value="">Choose…</option>
-            <For each={libs()}>{(l) => <option value={l.id}>{l.name} ({l.count})</option>}</For>
-          </select>
+          <Select value={lib()} onChange={setLib} options={(libs() ?? []).map((l) => ({ value: String(l.id), label: `${l.name} (${l.count})` }))} />
         </label>
         <label>Pipeline
-          <select value={preset()} onChange={(e) => setPreset(e.currentTarget.value)}>
-            <For each={presets()}>{(p) => <option value={p.id}>{p.name}</option>}</For>
-          </select>
+          <Select value={preset()} onChange={setPreset} options={(presets() ?? []).map((p) => ({ value: p.id, label: p.name }))} />
         </label>
         <button class="btn primary" disabled={!lib()}>Check server and queue</button>
         <p class="muted small">Single videos: the “Narration” button on a video's page; a whole library: also on its page.</p>
