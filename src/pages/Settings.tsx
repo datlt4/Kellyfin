@@ -614,6 +614,7 @@ function Narration() {
   const [cfg, setCfg] = createSignal<NarrationConfig>({ url: "", voice_vi: "", voice_zh: "" });
   createEffect(on(() => ov()?.config, (c) => c && setCfg(c), { defer: false }));
   const [check, setCheck] = createSignal<NarrationCheck | null>(null);
+  const [checking, setChecking] = createSignal(false);
   const [lib, setLib] = createSignal("");
   const [source, setSource] = createSignal("auto");
   const [langs, setLangs] = createSignal<string[]>(["vi", "zh"]);
@@ -625,11 +626,18 @@ function Narration() {
     e.preventDefault();
     act.run(async () => { await api("/admin/narration/config", { method: "PUT", body: JSON.stringify(cfg()) }); refetch(); }, "Saved");
   };
-  const runCheck = () =>
-    act.run(async () => {
+  // Checks the URL as typed: saved first, since the server does the checking.
+  const runCheck = () => {
+    setChecking(true);
+    return act.run(async () => {
       setCheck(null);
-      setCheck(await api<NarrationCheck>("/admin/narration/check"));
-    });
+      await api("/admin/narration/config", { method: "PUT", body: JSON.stringify(cfg()) });
+      const c = await api<NarrationCheck>("/admin/narration/check");
+      setCheck(c);
+      refetch();
+      if (c.checks.some((x) => !x.ok)) throw new Error("Some film-sub services do not answer (see above).");
+    }, "Every service answers.").finally(() => setChecking(false));
+  };
   const toggleLang = (code: string) => setLangs(langs().includes(code) ? langs().filter((l) => l !== code) : [...langs(), code]);
   const queue = (e: Event) => {
     e.preventDefault();
@@ -640,16 +648,16 @@ function Narration() {
       return n;
     }, "Queued");
   };
-  const snippet = () =>
-    `KELLYFIN_URL=${location.origin} KELLYFIN_NARRATOR_TOKEN=${ov()?.token ?? "…"} docker compose up -d kellyfin-narrator`;
+  const snippet = () => `KELLYFIN_URL=${location.origin}\nKELLYFIN_NARRATOR_TOKEN=${ov()?.token ?? "…"}`;
   return (
     <>
       <form class="panel form" onSubmit={save}>
         <h2>Narration <span class="tag">thuyết minh</span></h2>
         <p class="muted">
-          A worker next to the film-sub services makes English subtitles (Whisper) when a video has none, translates them
-          (Argos), reads them out (VieNeu for Vietnamese, edge-tts for Chinese) and mixes the voice over the original sound.
-          The result becomes an extra audio track and subtitles; the video files are never changed.
+          A worker next to the film-sub services makes subtitles in the spoken language (Whisper) when a video has none,
+          translates them into English, Vietnamese and Chinese (Argos), reads them out (VieNeu for Vietnamese, edge-tts
+          for Chinese) and mixes the voice over the original sound. The result becomes an extra audio track and
+          subtitles; the video files are never changed. Setup: <code>narrator/README.md</code>.
         </p>
         <label>film-sub server URL
           <input value={cfg().url} onInput={(e) => set("url", e.currentTarget.value)} placeholder="http://192.168.0.182:8080" inputmode="url" autocapitalize="off" />
@@ -663,7 +671,7 @@ function Narration() {
         </label>
         <div class="row-btns">
           <button class="btn primary">Save</button>
-          <button type="button" class="btn" onClick={runCheck} disabled={!ov()?.config.url}>Check server</button>
+          <button type="button" class="btn" onClick={runCheck} disabled={!cfg().url.trim() || checking()}>{checking() ? "Checking…" : "Check server"}</button>
         </div>
         <Show when={check()}>
           {(c) => (
@@ -677,8 +685,9 @@ function Narration() {
       <section class="panel">
         <h2>Worker</h2>
         <p class="muted">
-          It runs as the <code>kellyfin-narrator</code> service of the film-sub compose (or <code>narrator/</code> on its own)
-          and only connects out. In the film-sub folder:
+          The <code>kellyfin-narrator</code> service of <code>narrator/film-sub</code> (on the GPU machine) only connects
+          out. Put this in that folder's <code>.env</code> — with a Kellyfin address the GPU machine can reach — then run
+          <code>docker compose up -d</code>:
         </p>
         <pre class="snippet">{snippet()}</pre>
         <div class="row-btns">

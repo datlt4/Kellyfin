@@ -335,7 +335,7 @@ main { padding-bottom: 48px; }
 .p-menu-item:hover { background: rgba(255, 255, 255, 0.08); }
 .p-menu-item:disabled { opacity: 0.4; }
 .p-menu-item .muted { font-size: 12px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.check { width: 18px; flex: none; color: var(--accent-2); }
+.p-menu-item .check { width: 18px; flex: none; color: var(--accent-2); }
 .cast-banner {
   position: absolute;
   inset: 0;
