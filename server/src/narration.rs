@@ -1,15 +1,14 @@
 //! Narration (thuyết minh). A worker in the film-sub compose (narrator/) pulls jobs from here. Per video, in four
 //! stages: 1. subtitles in the spoken language (the video's own, else Whisper; "auto" detects the language),
 //! 2. translation into English, Vietnamese and Chinese (Argos), 3. a voice reads the narration languages (VieNeu for
-//! Vietnamese, edge-tts for Chinese), 4. mux — done here, on the server, from the video file itself: the worker
-//! uploads the voice and moves straight on to the next video while the server mixes it over the ducked original
-//! sound, one video at a time. Results live in
-//! data/narration/<item>/ (`<lang>.srt`, `<lang>.m4a`): the video files are never touched, and playback adds the
-//! narration as an extra audio track (remux / HLS take it as a second input).
+//! Vietnamese, edge-tts for Chinese), 4. mux, here on the server: the worker uploads subtitles and voices to
+//! data/narration/<item>/ and takes the next video, while the server writes the subtitles next to the video
+//! (`<stem>.<lang>.srt`, never over an existing file) and remuxes the video file itself with one more audio track per
+//! voice — the voice over the ducked original sound, language-tagged — like the hand-made Energon episodes. The
+//! video stream is copied, never re-encoded, and the new file is checked before it replaces the original.
 use crate::{
     auth::Admin,
     error::{ApiError, ApiResult},
-    stream::SubTrack,
     util, AppState,
 };
 use axum::{
@@ -21,7 +20,7 @@ use axum::{
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::{
     collections::HashMap,
     path::{Path as FsPath, PathBuf},
@@ -33,8 +32,6 @@ use tokio::{io::AsyncReadExt, io::AsyncWriteExt, process::Command};
 
 /// Languages a narration can be made in: (code used in file names and the API, ISO 639-2 tag, label).
 const LANGS: &[(&str, &str, &str)] = &[("vi", "vie", "Vietnamese"), ("zh", "zho", "Chinese")];
-/// Narration audio shows up as stream index AUDIO_BASE + 1 + position in LANGS (no real file has that many streams).
-pub const AUDIO_BASE: i64 = 1000;
 /// A running job not heard from for this long is given to another worker.
 const STALE_SECS: i64 = 900;
 const TOKEN_KEY: &str = "narration.token";
@@ -46,54 +43,12 @@ const DEFAULT_VOICE_ZH: &str = "zh-CN-XiaoxiaoNeural";
 const SUB_LANGS: &[&str] = &["en", "vi", "zh", "ja", "ko", "de", "fr", "es", "it", "pt", "ru", "th", "id", "ms"];
 /// Every job translates into these.
 const TARGETS: &[&str] = &["en", "vi", "zh"];
+const AF: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+const DUCK: &str = "sidechaincompress=threshold=0.01:ratio=5:attack=50:release=600";
 
+/// Where a job's uploads wait for the mux.
 pub fn dir(data: &FsPath, item: i64) -> PathBuf {
     data.join("narration").join(item.to_string())
-}
-
-/// The narration file behind a virtual audio index, if it was made.
-pub fn audio_in(dir: &FsPath, index: i64) -> Option<PathBuf> {
-    let pos = usize::try_from(index - AUDIO_BASE - 1).ok()?;
-    let (code, ..) = LANGS.get(pos)?;
-    Some(dir.join(format!("{code}.m4a"))).filter(|p| p.is_file())
-}
-
-pub fn audio_file(data: &FsPath, item: i64, index: i64) -> Option<PathBuf> {
-    audio_in(&dir(data, item), index)
-}
-
-/// Virtual audio streams for the item page and player, one per finished narration.
-pub fn extra_streams(data: &FsPath, item: i64) -> Vec<Value> {
-    let d = dir(data, item);
-    LANGS
-        .iter()
-        .enumerate()
-        .filter(|(_, (code, ..))| d.join(format!("{code}.m4a")).is_file())
-        .map(|(i, (_, iso, name))| {
-            json!({"index": AUDIO_BASE + 1 + i as i64, "type": "audio", "codec": "aac", "channels": 2, "lang": iso,
-                   "title": format!("Narration ({name})"), "default": false, "forced": false})
-        })
-        .collect()
-}
-
-pub fn sub_file(data: &FsPath, item: i64, lang: &str) -> Option<PathBuf> {
-    SUB_LANGS.contains(&lang).then(|| dir(data, item).join(format!("{lang}.srt"))).filter(|p| p.is_file())
-}
-
-/// Subtitles the worker made (keys "n<lang>"); only ones the video did not already have are uploaded.
-pub fn extra_subs(data: &FsPath, item: i64) -> Vec<SubTrack> {
-    SUB_LANGS
-        .iter()
-        .filter(|l| sub_file(data, item, l).is_some())
-        .map(|l| SubTrack {
-            key: format!("n{l}"),
-            lang: Some((*l).to_owned()),
-            title: Some("Kellyfin".into()),
-            codec: "srt".into(),
-            external: true,
-            supported: true,
-        })
-        .collect()
 }
 
 /// "en", "eng", "English", "en-US" -> "en", and likewise for SUB_LANGS. None for anything else.
@@ -128,73 +83,38 @@ fn upload_ok(name: &str) -> bool {
     }
 }
 
-/// Ducks the original sound while the voice speaks and adds the voice. The voice is padded with silence first:
-/// sidechaincompress ends with its shorter input, which once cut tracks off at the last spoken line.
-fn mux_graph(audio: i64) -> String {
-    const AF: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
-    format!(
-        "[0:{audio}]{AF}[og];[1:a:0]{AF},apad[v];[v]asplit=2[vs][vm];\
-         [og][vs]sidechaincompress=threshold=0.01:ratio=5:attack=50:release=600[d];\
-         [d][vm]amix=inputs=2:duration=first:normalize=0[out]"
-    )
+/// Title of the tracks added here (kept by Matroska; MP4 keeps only the language tag).
+fn track_title(name: &str) -> String {
+    format!("Narration ({name})")
 }
 
-/// One mux at a time: the mini PC also transcodes.
+/// The original track split once per voice input; each copy ducks under its voice and gets it added, as [n<input>].
+/// Voices are padded with silence first: sidechaincompress ends with its shorter input.
+fn mux_graph(audio: i64, inputs: &[usize]) -> String {
+    let outs: String = inputs.iter().map(|j| format!("[og{j}]")).collect();
+    let mut g = format!("[0:{audio}]{AF},asplit={}{outs}", inputs.len());
+    for j in inputs {
+        g += &format!(
+            ";[{j}:a:0]{AF},apad,asplit=2[vs{j}][vm{j}];[og{j}][vs{j}]{DUCK}[d{j}];[d{j}][vm{j}]amix=inputs=2:duration=first:normalize=0[n{j}]"
+        );
+    }
+    g
+}
+
+/// One mux at a time: the mini PC also transcodes, and each mux rewrites a whole video file.
 fn mux_lock() -> &'static tokio::sync::Semaphore {
     static LOCK: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Semaphore::new(1))
 }
 
-/// Stage 4 of a job whose voices are uploaded: `<lang>.voice.flac` -> `<lang>.m4a`, then done (or failed).
+/// Stage 4 of a job whose uploads are complete; then done (or failed, the video untouched).
 async fn mux(st: AppState, id: i64) {
     let _turn = mux_lock().acquire().await;
-    let r = async {
-        let (item, path, streams): (i64, String, Option<String>) = sqlx::query_as(
-            "SELECT i.id, i.path, i.streams FROM narration_jobs j JOIN items i ON i.id = j.item_id WHERE j.id = ?",
-        )
-        .bind(id)
-        .fetch_one(&st.db)
-        .await?;
-        let streams: Vec<Value> = streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let a = source_audio(&streams).ok_or_else(|| anyhow::anyhow!("the video has no audio"))?;
-        let d = dir(&st.cfg.data, item);
-        for (code, ..) in LANGS {
-            let voice = d.join(format!("{code}.voice.flac"));
-            if !voice.is_file() {
-                continue;
-            }
-            sqlx::query("UPDATE narration_jobs SET step = ?, updated_at = ? WHERE id = ?")
-                .bind(format!("Muxing the {code} narration over the original sound (Kellyfin server)"))
-                .bind(util::now())
-                .bind(id)
-                .execute(&st.db)
-                .await?;
-            let part = d.join(format!("{code}.m4a.part"));
-            let out = Command::new("ffmpeg")
-                .args(["-v", "error", "-nostdin", "-y", "-i"])
-                .arg(format!("file:{path}"))
-                .arg("-i")
-                .arg(format!("file:{}", voice.display()))
-                .args(["-filter_complex", &mux_graph(a), "-map", "[out]", "-c:a", "aac", "-b:a", "128k"])
-                .args(["-movflags", "+faststart", "-f", "mp4"])
-                .arg(&part)
-                .kill_on_drop(true)
-                .output()
-                .await?;
-            if !out.status.success() {
-                anyhow::bail!("mux {code}: {}", String::from_utf8_lossy(&out.stderr).trim());
-            }
-            tokio::fs::rename(&part, d.join(format!("{code}.m4a"))).await?;
-            let _ = tokio::fs::remove_file(&voice).await;
-        }
-        anyhow::Ok(())
-    }
-    .await;
-    let (status, error) = match r {
+    let (status, error) = match embed(&st, id).await {
         Ok(()) => ("done", None),
         Err(e) => ("failed", Some(format!("{e:#}"))),
     };
-    tracing::info!("narration job {id} {status}");
+    tracing::info!("narration job {id} {status}{}", error.as_deref().map(|e| format!(": {e}")).unwrap_or_default());
     let _ = sqlx::query("UPDATE narration_jobs SET status = ?, step = NULL, progress = 1, error = ?, updated_at = ? WHERE id = ?")
         .bind(status)
         .bind(error)
@@ -204,13 +124,148 @@ async fn mux(st: AppState, id: i64) {
         .await;
 }
 
-/// After a restart: finish the muxes that were waiting or running.
+async fn embed(st: &AppState, id: i64) -> anyhow::Result<()> {
+    let (item, path, streams, duration): (i64, String, Option<String>, Option<f64>) = sqlx::query_as(
+        "SELECT i.id, i.path, i.streams, i.duration FROM narration_jobs j JOIN items i ON i.id = j.item_id WHERE j.id = ?",
+    )
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
+    let streams: Vec<Value> = streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let d = dir(&st.cfg.data, item);
+    let video = FsPath::new(&path);
+    let (Some(folder), Some(stem), Some(ext)) =
+        (video.parent(), video.file_stem().and_then(|s| s.to_str()), video.extension().and_then(|e| e.to_str()))
+    else {
+        anyhow::bail!("unexpected file name {path}");
+    };
+    // New tracks: a voice from the worker to mix, or a track already mixed before 2.2.9 (<lang>.m4a).
+    let mut voices: Vec<(&(&str, &str, &str), PathBuf, bool)> = Vec::new();
+    for l in LANGS {
+        let (voice, mixed) = (d.join(format!("{}.voice.flac", l.0)), d.join(format!("{}.m4a", l.0)));
+        if voice.is_file() {
+            voices.push((l, voice, false));
+        } else if mixed.is_file() {
+            voices.push((l, mixed, true));
+        }
+    }
+    if !voices.is_empty() {
+        sqlx::query("UPDATE narration_jobs SET step = ?, updated_at = ? WHERE id = ?")
+            .bind("Muxing the narration into the video file (Kellyfin server)")
+            .bind(util::now())
+            .bind(id)
+            .execute(&st.db)
+            .await?;
+        let a = source_audio(&streams).ok_or_else(|| anyhow::anyhow!("the video has no audio"))?;
+        // Every original track stays, except an earlier narration in a language made now (a redo replaces it).
+        let codes: Vec<&str> = voices.iter().map(|(l, ..)| l.0).collect();
+        let keep: Vec<i64> = streams
+            .iter()
+            .filter(|s| s["type"] == "audio")
+            .filter(|s| s["index"] == a || !s["lang"].as_str().and_then(lang_code).is_some_and(|c| codes.contains(&c)))
+            .filter_map(|s| s["index"].as_i64())
+            .collect();
+        let isos: Vec<&str> = voices.iter().map(|(l, ..)| l.1).collect();
+        // Hidden next to the video: same file system for the rename, and the scanner skips dot files.
+        let tmp = folder.join(format!(".{stem}.narrating.{ext}"));
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-v", "error", "-nostdin", "-y", "-i"]).arg(format!("file:{path}"));
+        for (_, p, _) in &voices {
+            cmd.arg("-i").arg(format!("file:{}", p.display()));
+        }
+        let mix: Vec<usize> = voices.iter().enumerate().filter(|(_, v)| !v.2).map(|(i, _)| i + 1).collect();
+        if !mix.is_empty() {
+            cmd.args(["-filter_complex", &mux_graph(a, &mix)]);
+        }
+        cmd.args(["-map", "0:v"]);
+        for k in &keep {
+            cmd.args(["-map", &format!("0:{k}")]);
+        }
+        for (i, (_, _, mixed)) in voices.iter().enumerate() {
+            cmd.args(["-map", &if *mixed { format!("{}:a:0", i + 1) } else { format!("[n{}]", i + 1) }]);
+        }
+        cmd.args(["-map", "0:s?", "-c", "copy"]);
+        for (k, (l, _, mixed)) in voices.iter().enumerate() {
+            let n = keep.len() + k;
+            if !mixed {
+                cmd.args([&format!("-c:a:{n}"), "aac", &format!("-b:a:{n}"), "128k"]);
+            }
+            cmd.args([&format!("-metadata:s:a:{n}"), &format!("language={}", l.1)])
+                .args([&format!("-metadata:s:a:{n}"), &format!("title={}", track_title(l.2))])
+                .args([&format!("-disposition:a:{n}"), "0"]);
+        }
+        if matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "m4v" | "mov") {
+            cmd.args(["-movflags", "+faststart"]);
+        }
+        let out = cmd.arg(&tmp).kill_on_drop(true).output().await?;
+        if !out.status.success() {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            anyhow::bail!("ffmpeg: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        if let Err(e) = verify(&tmp, keep.len() + voices.len(), &isos, duration).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e);
+        }
+        tokio::fs::rename(&tmp, video).await?;
+        // Stream indexes moved: drop the cached WebVTT of embedded subtitles, then probe the new file.
+        let _ = tokio::fs::remove_dir_all(st.cfg.data.join("subs").join(item.to_string())).await;
+        crate::scan::refresh_item(&st.db, item, &path).await?;
+    }
+    // Subtitles next to the video, where every player finds them; an existing file is left alone.
+    if let Ok(mut rd) = tokio::fs::read_dir(&d).await {
+        while let Some(e) = rd.next_entry().await? {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if let Some(lang) = name.strip_suffix(".srt").filter(|l| SUB_LANGS.contains(l)) {
+                let target = folder.join(format!("{stem}.{lang}.srt"));
+                if !target.exists() {
+                    tokio::fs::copy(e.path(), &target).await?;
+                }
+            }
+        }
+    }
+    let _ = tokio::fs::remove_dir_all(&d).await;
+    Ok(())
+}
+
+/// The muxed file has a video, every expected audio track, the new languages, and the video's duration.
+async fn verify(file: &FsPath, audio_tracks: usize, langs: &[&str], duration: Option<f64>) -> anyhow::Result<()> {
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_type:stream_tags=language:format=duration", "-of", "json"])
+        .arg(format!("file:{}", file.display()))
+        .output()
+        .await?;
+    let v: Value = serde_json::from_slice(&out.stdout)?;
+    let st = v["streams"].as_array().cloned().unwrap_or_default();
+    let audio: Vec<&Value> = st.iter().filter(|s| s["codec_type"] == "audio").collect();
+    if audio.len() != audio_tracks || !st.iter().any(|s| s["codec_type"] == "video") {
+        anyhow::bail!("muxed file has {} audio tracks, expected {audio_tracks}", audio.len());
+    }
+    if let Some(l) = langs.iter().find(|l| !audio.iter().any(|s| s["tags"]["language"].as_str() == Some(**l))) {
+        anyhow::bail!("muxed file lacks the {l} track");
+    }
+    let got: f64 = v["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.0);
+    if duration.is_some_and(|d| (got - d).abs() > 2.0) {
+        anyhow::bail!("muxed file is {got:.1} s long, the video {:.1} s", duration.unwrap_or(0.0));
+    }
+    Ok(())
+}
+
+/// At start-up: finish the muxes that were waiting or running, and embed narrations made before 2.2.9 (kept as
+/// separate tracks in data/narration then).
 pub async fn resume(st: AppState) {
-    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM narration_jobs WHERE status = 'muxing' ORDER BY id")
+    let jobs: Vec<(i64, i64, String)> = sqlx::query_as("SELECT id, item_id, status FROM narration_jobs WHERE status IN ('muxing', 'done') ORDER BY id")
         .fetch_all(&st.db)
         .await
         .unwrap_or_default();
-    for id in ids {
+    for (id, item, status) in jobs {
+        let d = dir(&st.cfg.data, item);
+        if status == "done" && !LANGS.iter().any(|l| d.join(format!("{}.m4a", l.0)).is_file()) {
+            continue;
+        }
+        let _ = sqlx::query("UPDATE narration_jobs SET status = 'muxing', stage = 4, step = 'Waiting to mux (Kellyfin server)' WHERE id = ?")
+            .bind(id)
+            .execute(&st.db)
+            .await;
         tokio::spawn(mux(st.clone(), id));
     }
 }
@@ -631,7 +686,7 @@ pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) 
     Ok(Json(added))
 }
 
-/// Removes the job and everything it made for the video.
+/// Removes the job and its waiting uploads; tracks and subtitles already muxed into the folder stay.
 pub async fn delete_job(State(st): State<AppState>, _a: Admin, Path(id): Path<i64>) -> ApiResult<StatusCode> {
     let item: Option<i64> = sqlx::query_scalar("DELETE FROM narration_jobs WHERE id = ? RETURNING item_id").bind(id).fetch_optional(&st.db).await?;
     if let Some(item) = item {
@@ -645,7 +700,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn languages_and_virtual_tracks() {
+    fn languages_uploads_and_graph() {
         assert_eq!(lang_code("eng"), Some("en"));
         assert_eq!(lang_code("Vietnamese"), Some("vi"));
         assert_eq!(lang_code("zh-Hans"), Some("zh"));
@@ -653,17 +708,8 @@ mod tests {
         assert_eq!(lang_code("xx"), None);
         assert!(upload_ok("ko.srt") && upload_ok("vi.voice.flac"));
         assert!(!upload_ok("vi.m4a") && !upload_ok("ko.voice.flac") && !upload_ok("../x.srt") && !upload_ok("vi.wav"));
-        assert!(mux_graph(2).starts_with("[0:2]aformat"));
-        let d = std::env::temp_dir().join(format!("kf-narration-{}", std::process::id()));
-        std::fs::create_dir_all(dir(&d, 7)).unwrap();
-        std::fs::write(dir(&d, 7).join("zh.m4a"), b"x").unwrap();
-        let s = extra_streams(&d, 7);
-        assert_eq!(s.len(), 1);
-        assert_eq!(s[0]["index"], AUDIO_BASE + 2);
-        assert_eq!(s[0]["lang"], "zho");
-        assert!(audio_file(&d, 7, AUDIO_BASE + 2).is_some());
-        assert!(audio_file(&d, 7, AUDIO_BASE + 1).is_none());
-        assert!(audio_file(&d, 7, 1).is_none());
-        std::fs::remove_dir_all(&d).unwrap();
+        let g = mux_graph(1, &[1, 2]);
+        assert!(g.starts_with("[0:1]aformat") && g.contains("asplit=2[og1][og2]") && g.ends_with("[n2]"));
+        assert_eq!(track_title("Chinese"), "Narration (Chinese)");
     }
 }

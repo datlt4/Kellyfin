@@ -132,8 +132,6 @@ pub struct Transcoder {
 
 struct Source {
     path: String,
-    /// Where the narration worker's tracks for this item live (virtual audio indexes, see narration.rs).
-    narration_dir: PathBuf,
     width: u32,
     height: u32,
     duration: f64,
@@ -229,14 +227,10 @@ impl Transcoder {
         // copyts keeps source timestamps, so segments from different runs line up on one timeline.
         cmd.args(["-ss", &format!("{at:.3}"), "-copyts", "-start_at_zero"])
             .arg("-i")
-            .arg(format!("file:{}", src.path));
-        let narration = crate::narration::audio_in(&src.narration_dir, v.audio);
-        if let Some(n) = &narration {
-            cmd.args(["-ss", &format!("{at:.3}")]).arg("-i").arg(format!("file:{}", n.display()));
-        }
-        cmd.args(["-map", "0:v:0"]);
+            .arg(format!("file:{}", src.path))
+            .args(["-map", "0:v:0"]);
         if v.audio >= 0 {
-            let map = if narration.is_some() { "1:a:0".to_owned() } else { format!("0:{}", v.audio) };
+            let map = format!("0:{}", v.audio);
             // A track shorter than the video (e.g. a dub) would leave the last segments without sound and the
             // player waiting for it: pad with silence up to the video's end, emitted as the video advances.
             cmd.args(["-map", &map, "-af", "apad", "-c:a", "aac", "-ac", "2", "-b:a", "160k"])
@@ -431,7 +425,6 @@ async fn source(st: &AppState, id: i64) -> ApiResult<Source> {
     let fps = frame_rate(st, id, &path).await;
     Ok(Source {
         path,
-        narration_dir: crate::narration::dir(&st.cfg.data, id),
         width: w as u32,
         height: h as u32,
         duration,

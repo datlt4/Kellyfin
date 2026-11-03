@@ -1,7 +1,9 @@
 # Narration worker (thuyết minh)
 
-Gives videos a Vietnamese and/or Chinese voice-over, as an extra audio track in Kellyfin, plus subtitles in the
-spoken language, English, Vietnamese and Chinese. The video files are never changed.
+Gives videos a Vietnamese and/or Chinese voice-over — muxed into the video file as extra language-tagged audio tracks
+(the video is copied, not re-encoded) — plus subtitles in the spoken language, English, Vietnamese and Chinese next to
+the video (`<video>.<lang>.srt`), like the hand-made Transformers: Energon episodes. Kellyfin's media folders must be
+mounted writable.
 
 Per video, in four stages (shown in **Settings → Narration → Queue**):
 

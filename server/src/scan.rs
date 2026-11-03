@@ -298,6 +298,18 @@ fn unite_crops(found: &[[i64; 4]], w: i64, h: i64) -> String {
     format!("{}:{}:{}:{}", x1 - x0, y1 - y0, x0, y0)
 }
 
+/// After the file was rewritten in place (narration mux): record its new size and mtime, and probe it again.
+pub async fn refresh_item(db: &SqlitePool, id: i64, path: &str) -> anyhow::Result<()> {
+    let meta = tokio::fs::metadata(path).await?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs() as i64);
+    sqlx::query("UPDATE items SET size = ?, mtime = ? WHERE id = ?").bind(meta.len() as i64).bind(mtime).bind(id).execute(db).await?;
+    probe_item(db, id, path).await
+}
+
 async fn probe_item(db: &SqlitePool, id: i64, path: &str) -> anyhow::Result<()> {
     let out = tokio::time::timeout(
         Duration::from_secs(60),

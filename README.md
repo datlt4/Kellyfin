@@ -64,7 +64,8 @@ Kellyfin was written to fix what hurt in daily Jellyfin use on a small home serv
 - **AI upscaling (experimental)**: GPU workers turn low-resolution videos into 1080p copies, chosen per library
   or episode, that appear as an extra quality in the player.
 - **Narration (thuyết minh)**: subtitles in the spoken language (Whisper), translated into English, Vietnamese and
-  Chinese, read out by a voice and mixed over the original sound — an extra audio track; the files stay untouched.
+  Chinese, read out by a voice and mixed over the original sound — added to the video file as extra audio tracks,
+  with the subtitles next to it.
 
 ## Screenshots
 
@@ -129,7 +130,7 @@ services:
       - "110"                                # the host's "render" group id
     volumes:
       - ./data:/data                         # database, images, transcode scratch
-      - /path/to/movies:/movies:ro           # media, read-only
+      - /path/to/movies:/movies:ro           # media; drop :ro to use narration (it writes into these folders)
 ```
 
 ```sh
@@ -137,7 +138,8 @@ docker compose up -d
 ```
 
 Open `http://<server>:8024`, sign in as `root`, then add libraries in **Settings → Libraries** (folders are picked
-from what the container sees). The server never writes to media folders.
+from what the container sees). Only narration writes to media folders (an extra audio track per voice, subtitles next
+to the video); with read-only media everything else works.
 
 NVIDIA instead of VAAPI: install the NVIDIA Container Toolkit and add
 
@@ -198,8 +200,10 @@ docker compose up -d
 The worker connects to Kellyfin by itself and reports in **Settings → Narration** whether each service answers; queue a library there
 (spoken language: detect, or pick one) or one video with **Narration** on its page. Per video: subtitles in the spoken
 language (the video's own, else Whisper) → English, Vietnamese and Chinese subtitles (Argos) → Vietnamese voice
-(VieNeu) and Chinese voice (edge-tts, needs Internet) → mixed over the ducked original sound. The results live in
-Kellyfin's data folder and show up as extra subtitle and audio tracks.
+(VieNeu) and Chinese voice (edge-tts, needs Internet) → mixed over the ducked original sound. The results go into
+the video folder: `<video>.<lang>.srt` beside it, and one more language-tagged audio track per voice muxed into the
+video file itself (video copied, not re-encoded; the new file is checked before it replaces the old one). The media
+folders must be mounted writable for this.
 
 ## Command line
 

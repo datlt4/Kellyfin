@@ -312,11 +312,6 @@ async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> Ap
     })
     .await
     .map_err(anyhow::Error::from)?;
-    // Narrations made for this video: extra audio tracks and the subtitles they came from.
-    if let Some(a) = d.streams.as_array_mut() {
-        a.extend(narration::extra_streams(&st.cfg.data, d.card.id));
-    }
-    d.subtitles.extend(narration::extra_subs(&st.cfg.data, d.card.id));
     // Neighbours in library order, for prev/next episode.
     let sibling = |cmp: &str, dir: &str| {
         format!("SELECT id FROM items WHERE library_id = ? AND (sort_title, id) {cmp} (?, ?) ORDER BY sort_title {dir}, id {dir} LIMIT 1")

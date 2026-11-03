@@ -1,4 +1,5 @@
-# Runs next to Jellyfin; media is mounted read-only at the same paths Jellyfin uses.
+# Media is mounted at the same paths Jellyfin used. Writable: narration (thuyết minh) adds audio tracks to the
+# videos and subtitles next to them; nothing else writes there.
 services:
   kellyfin:
     build:
@@ -27,7 +28,7 @@ services:
       KELLYFIN_ADMIN_PASSWORD: ${KELLYFIN_ADMIN_PASSWORD:-}
     volumes:
       - /mnt/das_8tb/kellyfin_volume/data:/data
-      - /mnt/das_8tb/jellyfin_volume/media:/media:ro
-      - /mnt/das_8tb/jellyfin_volume/movies:/movies:ro
-      - /mnt/das_8tb/jellyfin_volume/hanzii:/hanzii:ro
-      - /mnt/das_8tb/metube_volume:/metube_volume:ro
+      - /mnt/das_8tb/jellyfin_volume/media:/media
+      - /mnt/das_8tb/jellyfin_volume/movies:/movies
+      - /mnt/das_8tb/jellyfin_volume/hanzii:/hanzii
+      - /mnt/das_8tb/metube_volume:/metube_volume

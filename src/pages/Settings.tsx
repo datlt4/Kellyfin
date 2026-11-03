@@ -651,9 +651,10 @@ function Narration() {
         <p class="muted">
           A worker next to the film-sub services makes subtitles in the spoken language (Whisper) when a video has none,
           translates them into English, Vietnamese and Chinese (Argos) and reads them out (VieNeu for Vietnamese, edge-tts
-          for Chinese); this server then mixes the voice over the original sound while the worker takes the next video. The result becomes an extra audio track and
-          subtitles; the video files are never changed. The worker connects to Kellyfin by itself and reports whether
-          the services answer. Setup: <code>narrator/README.md</code>.
+          for Chinese); this server then mixes each voice over the original sound and muxes it into the video file as an
+          extra language-tagged audio track (the video is copied, not re-encoded), with the subtitles written next to the
+          video — while the worker takes the next video. The media folders must be writable. The worker connects to
+          Kellyfin by itself and reports whether the services answer. Setup: <code>narrator/README.md</code>.
         </p>
         <label>Vietnamese voice (VieNeu)
           <input value={cfg().voice_vi} onInput={(e) => set("voice_vi", e.currentTarget.value)} list="vieneu-voices" />
@@ -744,7 +745,7 @@ function Narration() {
                 <Show when={j.status === "failed"}>
                   <button class="btn small" onClick={() => act.run(async () => { await checkNarration(); await api("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [j.item_id], source: j.source, langs: j.langs.split(",") }) }); refetch(); })}>Retry</button>
                 </Show>
-                <button class="btn small danger" onClick={() => { if (confirm(`Delete this job and the narration made for "${j.title}"?`)) act.run(async () => { await api(`/admin/narration/jobs/${j.id}`, { method: "DELETE" }); refetch(); }); }}>Delete</button>
+                <button class="btn small danger" onClick={() => { if (confirm(`Delete this job? Tracks and subtitles already added to "${j.title}" stay in its folder.`)) act.run(async () => { await api(`/admin/narration/jobs/${j.id}`, { method: "DELETE" }); refetch(); }); }}>Delete</button>
               </div>
             </div>
           )}
