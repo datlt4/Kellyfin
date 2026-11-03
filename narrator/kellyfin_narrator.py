@@ -451,10 +451,11 @@ def health():
             import edge_tts
 
             async def go():
+                # Read the whole (short) stream: leaving it early leaks the connection.
+                got = False
                 async for chunk in edge_tts.Communicate("测试", "zh-CN-XiaoxiaoNeural").stream():
-                    if chunk["type"] == "audio":
-                        return True
-                return False
+                    got = got or chunk["type"] == "audio"
+                return got
 
             _report["edge"] = asyncio.run(asyncio.wait_for(go(), 20))
             _report["edge_at"] = now
