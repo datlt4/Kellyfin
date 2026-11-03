@@ -28,6 +28,7 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from difflib import SequenceMatcher
 
 import numpy as np
 import requests
@@ -147,10 +148,26 @@ def whisper(base, audio, lang, tmp):
         r = requests.post(f"{base}/whisper/v1/transcribe", files={"file": ("speech.wav", f, "audio/wav")},
                           data={"model": "medium", "language": lang}, timeout=3600)
     r.raise_for_status()
-    cues = parse_srt(r.text)
+    cues = dedupe(parse_srt(r.text))
     if not cues:
         raise JobError("Whisper found no speech in this video")
     return cues
+
+
+def dedupe(cues, similar=0.6, window=3, gap=10.0):
+    """Whisper often hears one line two or three times in a row with a character or two changed. A line more than
+    60 % like one of the last few kept (and close in time) is dropped; the kept one stays on screen until it ends."""
+    out = []
+    for s, e, t in cues:
+        key = re.sub(r"\W+", " ", t.lower()).strip()
+        for k in range(len(out) - 1, max(-1, len(out) - 1 - window), -1):
+            ps, pe, pt = out[k]
+            if s - pe <= gap and SequenceMatcher(None, re.sub(r"\W+", " ", pt.lower()).strip(), key).ratio() > similar:
+                out[k] = (ps, max(pe, e), pt)
+                break
+        else:
+            out.append((s, e, t))
+    return out
 
 
 def argos_code(base, lang):
