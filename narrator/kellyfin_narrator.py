@@ -395,13 +395,21 @@ def to_flac(voice, dest):
 # Watermarks and site captions that OCR picks up and a voice must not read.
 OCR_JUNK = re.compile(r"sohu|iqiyi|youku|\bqq\b|bilibili|tencent|mgtv|https?:|www\.|\.com|1905", re.I)
 DIFF_HI = 4.0      # mean change (0-255) of the subtitle band, at 320 px wide, that means "new text"
+DIFF_CELL = 12.0   # ...or this mean change in any 48 x 8 px cell (a short caption over a still picture)
 RECHECK = 10       # frames (5 s at 2 fps) after which a shown line is looked at again anyway
+OCR_WIDTH = 1920   # px: the band is read at the video's own size up to this (captions are small in a wide frame)
+CENTER = 0.15      # burned-in subtitles are centred: a line's middle may stray this share of the width
+STILL_SPAN = 10.0  # seconds: a line shown this long, in one place, is page text, not a subtitle
+STILL_GAP = 20.0   # a caption box may hide the line this long without it counting as a new line
+STILL_SHARE = 0.35 # ...but it must be visible at least this share of the span
 
 
 def ocr(base, video, langs, crop, duration, on_progress):
     """Lines from the bottom `crop` of the frame, sampled twice a second; a frame is read only when the band
     changed, once per language in `langs` (overlapping boxes keep the surer reading). Lines over 60 % alike are one
-    line; shorter than 0.7 s dropped; the same text within 2 s merged."""
+    line; shorter than 0.7 s dropped; the same text within 2 s merged. Text behind the picture (a lecture's slides,
+    a status bar, a list) is dropped: lines that stay in one place for 10 s+, and captions
+    that are not centred (skipped when that leaves nothing)."""
     lang = langs[0]
     need(base, "/ocr/health", "EasyOCR")
     import io
@@ -411,12 +419,13 @@ def ocr(base, video, langs, crop, duration, on_progress):
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", video],
         capture_output=True, text=True, check=True).stdout.strip().split(",")[:2])
     band = max(16, int(h * (crop or 0.35)) // 2 * 2)
-    ow = min(960, w) // 2 * 2
+    ow = min(OCR_WIDTH, w) // 2 * 2
     oh = max(16, int(band * ow / w) // 2 * 2)
     p = subprocess.Popen(["ffmpeg", "-v", "error", "-nostdin", "-i", video, "-vf",
                           f"fps=2,crop=iw:{band}:0:ih-{band},scale={ow}:{oh}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                          stdout=subprocess.PIPE)
     size, step = ow * oh * 3, max(1, ow // 320)
+    cols = ow // step
     s = requests.Session()
 
     def overlap(a, b):
@@ -440,12 +449,124 @@ def ocr(base, video, langs, crop, duration, on_progress):
                 elif x.get("conf", 0) > found[same].get("conf", 0):
                     found[same] = x
         found.sort(key=lambda x: (x["bbox"][1] // 20, x["bbox"][0]))
-        return " ".join(x["text"].strip() for x in found if x["text"].strip() and not OCR_JUNK.search(x["text"])).strip()
+        for x in found:
+            x["text"] = x["text"].strip()
+        return [x for x in found if re.search(r"\w", x["text"]) and not OCR_JUNK.search(x["text"])]
 
     def alike(a, b):
         return SequenceMatcher(None, a.lower(), b.lower()).ratio() > 0.6
 
-    cues, cur, last, since, i = [], None, None, 0, 0
+    def same_line(a, b):
+        a, b = a.lower(), b.lower()
+        return SequenceMatcher(None, a, b).ratio() > 0.8 or (min(len(a), len(b)) >= 8 and (a in b or b in a))
+
+    def mark_still(reads, end):
+        """Flags (`x["c"]["still"]`) the lines that stay put for long: text of the page behind the subtitles. A line
+        the caption box covers now and then is still the same line."""
+        live, every = [], []
+        for n, (t, boxes) in enumerate(reads):
+            dt = (reads[n + 1][0] if n + 1 < len(reads) else end) - t
+            live = [c for c in live if t - c["end"] <= STILL_GAP]
+            for x in boxes:
+                c = next((c for c in live if overlap(c["bbox"], x["bbox"]) > 0.5 and same_line(c["text"], x["text"])), None)
+                if c is None:
+                    c = {"bbox": x["bbox"], "text": x["text"], "t0": t, "end": t, "on": 0.0, "still": False}
+                    live.append(c)
+                    every.append(c)
+                if len(x["text"]) > len(c["text"]):
+                    c["text"], c["bbox"] = x["text"], x["bbox"]  # the whole line, seen while no caption covered it
+                c["end"], c["on"] = t + dt, c["on"] + dt
+                c["still"] = c["end"] - c["t0"] >= STILL_SPAN and c["on"] >= STILL_SHARE * (c["end"] - c["t0"])
+                x["c"] = c
+        return [c for c in every if c["still"]]
+
+    def lines(boxes):
+        """Boxes of one row that nearly touch are one line (OCR splits a long line in pieces)."""
+        out = []
+        for x in sorted(boxes, key=lambda x: x["bbox"][0]):
+            x0, y0, x1, y1 = x["bbox"]
+            l = next((l for l in out if min(y1, l["y1"]) - max(y0, l["y0"]) > 0.5 * min(y1 - y0, l["y1"] - l["y0"])
+                      and x0 - l["x1"] <= 2.5 * (y1 - y0)), None)
+            if l:
+                l.update(text=l["text"] + " " + x["text"], x1=max(l["x1"], x1), y0=min(l["y0"], y0), y1=max(l["y1"], y1))
+            else:
+                out.append({"text": x["text"], "x0": x0, "x1": x1, "y0": y0, "y1": y1})
+        return sorted(out, key=lambda l: l["y0"])
+
+    def blocks(ls):
+        """Lines one under the other, overlapping sideways (a caption of 2-3 lines, left- or centre-aligned in its
+        box), form a block."""
+        out = []
+        for l in ls:
+            prev = out[-1][-1] if out else None
+            if prev and l["y0"] - prev["y1"] <= 0.8 * (l["y1"] - l["y0"]) \
+                    and min(l["x1"], prev["x1"]) - max(l["x0"], prev["x0"]) >= 0.5 * min(l["x1"] - l["x0"], prev["x1"] - prev["x0"]):
+                out[-1].append(l)
+            else:
+                out.append([l])
+        return out
+
+    def strip_still(text, pages):
+        """Cuts a start or end that only continues page text the caption box hides (a prefix or suffix of it);
+        the rest of a word it broke goes too."""
+        low = text.lower()
+        for s in pages:
+            k = len(os.path.commonprefix([low, s]))
+            if 3 <= k < len(text) and (k >= 8 or text[k].isspace()):
+                return strip_still(re.sub(r"^\S*\s*", "", text[k:]) if not text[k].isspace() else text[k:].strip(), pages)
+            j = len(os.path.commonprefix([low[::-1], s[::-1]]))
+            if 3 <= j < len(text) and (j >= 8 or text[-j - 1].isspace()):
+                cut = text[:-j]
+                return strip_still(re.sub(r"\s*\S*$", "", cut) if not cut[-1:].isspace() else cut.strip(), pages)
+        return text
+
+    def trim(x, pages):
+        """The box without a scrap of page text at its start or end; the box shrinks with the text."""
+        text = strip_still(x["text"], pages)
+        if text == x["text"] or not text:
+            return x if text else None
+        x0, y0, x1, y1 = x["bbox"]
+        i = x["text"].find(text)
+        i = max(i, 0)
+        w = (x1 - x0) / len(x["text"])
+        return {**x, "text": text, "bbox": [x0 + w * i, y0, x0 + w * (i + len(text)), y1]}
+
+    def build(reads, end, stills, strict):
+        cues, cur = [], None
+        for t, boxes in reads:
+            parts = []
+            # Page text, or a scrap of it left visible beside the caption box.
+            page = [c for c in stills if c["t0"] <= t <= c["end"] + STILL_GAP]
+            bits = []
+            for x in boxes:
+                if x["c"]["still"] or any(overlap(x["bbox"], c["bbox"]) > 0.8 and x["text"].lower() in c["text"].lower() for c in page):
+                    continue
+                x = trim(x, [c["text"].lower() for c in page if min(x["bbox"][3], c["bbox"][3]) - max(x["bbox"][1], c["bbox"][1]) > 0])
+                if x:
+                    bits.append(x)
+            for blk in blocks(lines(bits)):
+                if strict and abs((min(l["x0"] for l in blk) + max(l["x1"] for l in blk)) / 2 - ow / 2) > ow * CENTER:
+                    continue
+                parts += [l["text"] for l in blk]
+            text = " ".join(p for p in parts if p)
+            if cur and text and alike(text, cur[1]):
+                if len(text) > len(cur[1]):
+                    cur = (cur[0], text)  # the fuller reading of the same line
+                continue
+            if cur:
+                cues.append((cur[0], t, cur[1]))
+            cur = (t, text) if text else None
+        if cur:
+            cues.append((cur[0], end, cur[1]))
+        merged = []
+        for c in (c for c in cues if c[1] - c[0] >= 0.7):
+            if merged and c[0] - merged[-1][1] <= 2.0 and alike(c[2], merged[-1][2]):
+                merged[-1] = (merged[-1][0], c[1], merged[-1][2])
+            else:
+                merged.append(c)
+        return merged
+
+    reads, last, since, i = [], None, 0, 0
     total = max(1, int(duration * 2))
     while True:
         frame = p.stdout.read(size)
@@ -453,30 +574,22 @@ def ocr(base, video, langs, crop, duration, on_progress):
             break
         t = i / 2
         i += 1
-        g = np.frombuffer(frame, np.uint8).reshape(oh, ow, 3)[:, ::step].mean(axis=2)
+        g = np.frombuffer(frame, np.uint8).reshape(oh, ow, 3)[:, :cols * step].reshape(oh, cols, step, 3).mean(axis=(2, 3))
         since += 1
-        if last is not None and np.abs(g - last).mean() < DIFF_HI and since < RECHECK:
-            continue
+        if last is not None and since < RECHECK:
+            d = np.abs(g - last)
+            # A small caption over a still picture moves the mean little but one cell a lot.
+            r, c = oh // 8, cols // 8
+            if d.mean() < DIFF_HI and d[:r * 8, :c * 8].reshape(r, 8, c, 8).mean(axis=(1, 3)).max() < DIFF_CELL:
+                continue
         last, since = g, 0
-        text = read(frame)
-        if cur and text and alike(text, cur[1]):
-            if len(text) > len(cur[1]):
-                cur = (cur[0], text)  # the fuller reading of the same line
-            continue
-        if cur:
-            cues.append((cur[0], t, cur[1]))
-        cur = (t, text) if text else None
+        reads.append((t, read(frame)))
         if i % 120 == 0:
             on_progress(min(1.0, i / total))
-    if cur:
-        cues.append((cur[0], i / 2, cur[1]))
     p.wait()
-    merged = []
-    for c in (c for c in cues if c[1] - c[0] >= 0.7):
-        if merged and c[0] - merged[-1][1] <= 2.0 and alike(c[2], merged[-1][2]):
-            merged[-1] = (merged[-1][0], c[1], merged[-1][2])
-        else:
-            merged.append(c)
+    stills = mark_still(reads, i / 2)
+    # Left-aligned subtitles are rare: fall back to any position when nothing is centred.
+    merged = build(reads, i / 2, stills, True) or build(reads, i / 2, stills, False)
     if not merged:
         raise JobError(f"OCR found no {lang} subtitles in the bottom {int((crop or 0.35) * 100)} % of the picture")
     return merged
