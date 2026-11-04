@@ -696,6 +696,7 @@ code { font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-r
 .sel-pop { position: fixed; z-index: 1000; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); padding: 6px; display: flex; flex-direction: column; gap: 6px; }
 .sel-filter { width: 100%; padding: 6px 8px; font-size: 13px; }
+.modal-box > .sel-filter { margin-bottom: 8px; }
 .sel-list { max-height: 260px; overflow: auto; display: flex; flex-direction: column; }
 .sel-opt { padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .sel-opt.hi { background: rgba(255, 255, 255, 0.08); }

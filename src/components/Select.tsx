@@ -5,7 +5,7 @@ import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 
 export type Option = { value: string; label: string; disabled?: boolean };
 
-const fold = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/gi, "d").toLowerCase();
+export const fold = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/gi, "d").toLowerCase();
 
 export default function Select(props: {
   value: string;

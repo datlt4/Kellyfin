@@ -102,8 +102,12 @@ fn track_title(name: &str) -> String {
 }
 
 /// The original track split once per voice input; each copy ducks under its voice and gets it added, as [n<input>].
-/// Voices are padded with silence first: sidechaincompress ends with its shorter input.
-fn mux_graph(audio: i64, inputs: &[usize]) -> String {
+/// Voices are padded with silence first: sidechaincompress ends with its shorter input. A video without sound has
+/// nothing to duck: its voices are only padded (endless, so the mux runs with -shortest and ends with the video).
+fn mux_graph(audio: Option<i64>, inputs: &[usize]) -> String {
+    let Some(audio) = audio else {
+        return inputs.iter().map(|j| format!("[{j}:a:0]{AF},apad[n{j}]")).collect::<Vec<_>>().join(";");
+    };
     let outs: String = inputs.iter().map(|j| format!("[og{j}]")).collect();
     let mut g = format!("[0:{audio}]{AF},asplit={}{outs}", inputs.len());
     for j in inputs {
@@ -169,13 +173,13 @@ async fn embed(st: &AppState, id: i64) -> anyhow::Result<()> {
             .bind(id)
             .execute(&st.db)
             .await?;
-        let a = source_audio(&streams).ok_or_else(|| anyhow::anyhow!("the video has no audio"))?;
+        let a = source_audio(&streams);
         // Every original track stays, except an earlier narration in a language made now (a redo replaces it).
         let codes: Vec<&str> = voices.iter().map(|(l, ..)| l.0).collect();
         let keep: Vec<i64> = streams
             .iter()
             .filter(|s| s["type"] == "audio")
-            .filter(|s| s["index"] == a || !s["lang"].as_str().and_then(lang_code).is_some_and(|c| codes.contains(&c)))
+            .filter(|s| a.is_some_and(|a| s["index"] == a) || !s["lang"].as_str().and_then(lang_code).is_some_and(|c| codes.contains(&c)))
             .filter_map(|s| s["index"].as_i64())
             .collect();
         let isos: Vec<&str> = voices.iter().map(|(l, ..)| l.1).collect();
@@ -198,10 +202,12 @@ async fn embed(st: &AppState, id: i64) -> anyhow::Result<()> {
             cmd.args(["-map", &if *mixed { format!("{}:a:0", i + 1) } else { format!("[n{}]", i + 1) }]);
         }
         cmd.args(["-map", "0:s?", "-c", "copy"]);
+        // WebM takes Opus or Vorbis only; the other containers take AAC.
+        let (codec, rate) = if ext.eq_ignore_ascii_case("webm") { ("libopus", "96k") } else { ("aac", "128k") };
         for (k, (l, _, mixed)) in voices.iter().enumerate() {
             let n = keep.len() + k;
             if !mixed {
-                cmd.args([&format!("-c:a:{n}"), "aac", &format!("-b:a:{n}"), "128k"]);
+                cmd.args([&format!("-c:a:{n}"), codec, &format!("-b:a:{n}"), rate]);
             }
             cmd.args([&format!("-metadata:s:a:{n}"), &format!("language={}", l.1)])
                 .args([&format!("-metadata:s:a:{n}"), &format!("title={}", track_title(l.2))])
@@ -209,6 +215,9 @@ async fn embed(st: &AppState, id: i64) -> anyhow::Result<()> {
         }
         if matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "m4v" | "mov") {
             cmd.args(["-movflags", "+faststart"]);
+        }
+        if a.is_none() {
+            cmd.arg("-shortest");
         }
         let out = cmd.arg(&tmp).kill_on_drop(true).output().await?;
         if !out.status.success() {
@@ -858,8 +867,10 @@ mod tests {
         assert!(upload_ok("ko.srt") && upload_ok("vi.voice.flac"));
         assert!(upload_ok("ko.voice.flac"));
         assert!(!upload_ok("vi.m4a") && !upload_ok("xx.voice.flac") && !upload_ok("../x.srt") && !upload_ok("vi.wav"));
-        let g = mux_graph(1, &[1, 2]);
+        let g = mux_graph(Some(1), &[1, 2]);
         assert!(g.starts_with("[0:1]aformat") && g.contains("asplit=2[og1][og2]") && g.ends_with("[n2]"));
+        let g = mux_graph(None, &[1, 2]);
+        assert!(g.starts_with("[1:a:0]aformat") && g.ends_with("apad[n2]") && !g.contains("[0:"));
         assert_eq!(track_title("Chinese"), "Narration (Chinese)");
     }
 }
