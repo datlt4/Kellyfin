@@ -53,6 +53,8 @@ const TOKEN_KEY: &str = "narration.token";
 const VOICE_VI_KEY: &str = "narration.voice_vi";
 /// "1": the scanner lists lessons that only have subtitles, to be narrated into audio.
 pub const LESSONS_KEY: &str = "narration.lessons";
+/// "1" (default): one video at a time; "3": three at once (the old behaviour).
+pub const JOBS_KEY: &str = "narration.jobs";
 const VOICE_ZH_KEY: &str = "narration.voice_zh";
 const DEFAULT_VOICE_VI: &str = "Ngọc Huyền";
 const DEFAULT_VOICE_ZH: &str = "zh-CN-XiaoxiaoNeural";
@@ -424,6 +426,9 @@ pub struct Config {
     /// "1": subtitles without a video or audio file become lessons (scan.rs).
     #[serde(default)]
     lessons: String,
+    /// Videos worked on at once: "1" (default) or "3"; the worker clamps the server value to its own WORKER_JOBS.
+    #[serde(default)]
+    jobs: String,
 }
 
 async fn config(st: &AppState) -> Config {
@@ -432,6 +437,7 @@ async fn config(st: &AppState) -> Config {
         voice_vi: get(VOICE_VI_KEY).await.unwrap_or_else(|| DEFAULT_VOICE_VI.into()),
         voice_zh: get(VOICE_ZH_KEY).await.unwrap_or_else(|| DEFAULT_VOICE_ZH.into()),
         lessons: get(LESSONS_KEY).await.unwrap_or_default(),
+        jobs: get(JOBS_KEY).await.unwrap_or_else(|| "1".into()),
     }
 }
 
@@ -763,7 +769,12 @@ pub async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<O
 }
 
 pub async fn save_config(State(st): State<AppState>, _a: Admin, Json(c): Json<Config>) -> ApiResult<StatusCode> {
-    for (k, v) in [(VOICE_VI_KEY, c.voice_vi.trim()), (VOICE_ZH_KEY, c.voice_zh.trim()), (LESSONS_KEY, if c.lessons == "1" { "1" } else { "0" })] {
+    for (k, v) in [
+        (VOICE_VI_KEY, c.voice_vi.trim()),
+        (VOICE_ZH_KEY, c.voice_zh.trim()),
+        (LESSONS_KEY, if c.lessons == "1" { "1" } else { "0" }),
+        (JOBS_KEY, if c.jobs == "3" { "3" } else { "1" }),
+    ] {
         sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
             .bind(k)
             .bind(v)
@@ -924,10 +935,10 @@ pub struct Clear {
     status: String,
 }
 
-/// Tidies the queue: removes the finished (or the failed) jobs; what was muxed into the videos stays.
+/// Tidies the queue: removes the finished, the failed or the paused jobs; what was muxed into the videos stays.
 pub async fn clear(State(st): State<AppState>, _a: Admin, Json(c): Json<Clear>) -> ApiResult<Json<u64>> {
-    if !matches!(c.status.as_str(), "done" | "failed") {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "clear done or failed jobs"));
+    if !matches!(c.status.as_str(), "done" | "failed" | "paused") {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "clear done, failed or paused jobs"));
     }
     let items: Vec<i64> =
         sqlx::query_scalar("DELETE FROM narration_jobs WHERE status = ? RETURNING item_id").bind(&c.status).fetch_all(&st.db).await?;

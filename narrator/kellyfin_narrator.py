@@ -47,7 +47,7 @@ EDGE_PARALLEL = int(os.environ.get("EDGE_TTS_PARALLEL", "12"))
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL") or "medium"  # baked into the Whisper image: tiny, small, medium
 WHISPER_TIMEOUT = int(os.environ.get("WHISPER_TIMEOUT") or 4 * 3600)  # seconds per video (a CPU takes long)
 EDGE_RETRIES = int(os.environ.get("EDGE_TTS_RETRIES") or 3)  # more rounds over the lines edge-tts failed on, after the first pass
-WORKER_JOBS = int(os.environ.get("WORKER_JOBS") or 3)  # videos worked on at once (see "RES")
+WORKER_JOBS = int(os.environ.get("WORKER_JOBS") or 3)  # hard cap on videos worked on at once; Kellyfin's Settings → Narration sets the actual limit (default: one at a time)
 SR = 48000
 
 # One video at a time in each of these (they are heavy), so while one video is read aloud (edge-tts, mostly waiting
@@ -952,6 +952,14 @@ def health():
     return checks, voices
 
 
+# Server-configured limit on videos at once (Settings -> Narration), clamped to WORKER_JOBS. 1 = one at a time, the default.
+JOBS = [1]
+
+
+def limit():
+    return max(1, min(WORKER_JOBS, JOBS[0]))
+
+
 def run_job(job):
     try:
         process(job)
@@ -967,7 +975,7 @@ def run_job(job):
 
 
 def main():
-    log(f"worker {NAME} -> {SERVER}, film-sub {FILMSUB}, up to {WORKER_JOBS} videos at once")
+    log(f"worker {NAME} -> {SERVER}, film-sub {FILMSUB}, up to {WORKER_JOBS} videos at once (Kellyfin sets how many)")
     running = {}  # job id -> thread
     while True:
         running = {i: t for i, t in running.items() if t.is_alive()}
@@ -976,7 +984,7 @@ def main():
         try:
             r = kf.post(kf_url("/narrator/claim"), json={"worker": NAME, "checks": checks, "voices": voices,
                                                          "edge_voices": _report["edge_voices"], "active": list(running),
-                                                         "take": len(running) < WORKER_JOBS}, timeout=60)
+                                                         "take": len(running) < limit()}, timeout=60)
             if r.status_code in (401, 403):
                 log("server refused the token (KELLYFIN_NARRATOR_TOKEN, Settings -> Narration)")
                 time.sleep(POLL * 4)
@@ -990,6 +998,10 @@ def main():
             time.sleep(5 if running else POLL)
             continue
         job = r.json()
+        try:
+            JOBS[0] = int(job.get("jobs") or 1)
+        except (TypeError, ValueError):
+            JOBS[0] = 1
         t = threading.Thread(target=run_job, args=(job,), daemon=True)
         t.start()
         running[job["job_id"]] = t  # and the next one straight away, until every slot is taken

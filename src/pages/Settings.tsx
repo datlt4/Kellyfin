@@ -688,7 +688,7 @@ function Stages(props: { status: string; stage: number }) {
 function Narration() {
   const [ov, { refetch }] = createResource(() => api<NarrationOverview>("/admin/narration"));
   const [libs] = createResource(() => api<Lib[]>("/libraries"));
-  const [cfg, setCfg] = createSignal<NarrationConfig>({ voice_vi: "", voice_zh: "", lessons: "" });
+  const [cfg, setCfg] = createSignal<NarrationConfig>({ voice_vi: "", voice_zh: "", lessons: "", jobs: "1" });
   // Fill the form once: the overview refreshes every few seconds and must not overwrite what is being typed.
   let filled = false;
   createEffect(on(() => ov()?.config, (c) => {
@@ -746,6 +746,9 @@ function Narration() {
           <input type="checkbox" checked={cfg().lessons === "1"} onChange={(e) => set("lessons", e.currentTarget.checked ? "1" : "0")} />
           Subtitle files without a video or audio file are lessons (narrate them into an mp3; applies at the next scan)
         </label>
+        <label>Videos at once
+          <Select value={cfg().jobs} onChange={(v) => set("jobs", v)} options={[{ value: "1", label: "Sequential — one at a time" }, { value: "3", label: "Parallel — three at a time" }]} />
+        </label>
         <div class="row-btns">
           <button class="btn primary">Save</button>
         </div>
@@ -800,10 +803,11 @@ function Narration() {
               </Show>
             )}
           </For>
-          <For each={[["done", "Clear finished"], ["failed", "Clear failed"]] as const}>
+          <For each={[["done", "Clear finished"], ["failed", "Clear failed"], ["paused", "Clear paused"]] as const}>
             {([status, label]) => (
               <Show when={(ov()?.jobs ?? []).some((j) => j.status === status)}>
                 <button type="button" class="btn small" onClick={() => act.run(async () => {
+                  if (status === "paused" && !confirm(`Delete every paused job (${(ov()?.jobs ?? []).filter((j) => j.status === "paused").length})? Tracks and subtitles already added to the videos stay in their folders.`)) return;
                   await api("/admin/narration/jobs/clear", { method: "POST", body: JSON.stringify({ status }) });
                   refetch();
                 })}>{label}</button>

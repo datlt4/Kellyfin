@@ -72,7 +72,7 @@ export type UpscaleOverview = {
     progress: number; error: string | null; worker: string | null; height: number | null; updated_at: number;
   }[];
 };
-export type NarrationConfig = { voice_vi: string; voice_zh: string; lessons: string };
+export type NarrationConfig = { voice_vi: string; voice_zh: string; lessons: string; jobs: string };
 /** A narration pipeline (server: pipeline.rs). */
 export type PipeNode = {
   id: string;

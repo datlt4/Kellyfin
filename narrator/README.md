@@ -30,10 +30,12 @@ subtitle file get the voice muxed in as before. Whisper and OCR pipelines skip l
 
 ## Several videos at once
 
-The worker works on up to `WORKER_JOBS` videos (default 3) at the same time, but OCR, Whisper, translation and VieNeu
-each serve one video at a time: a video waits for its turn ("Waiting for OCR…" in the queue) while the others go on.
-So while one video is read aloud by edge-tts, which mostly waits for the Internet, the next one is already in OCR
-or translation. The voices of one video (say Vietnamese and Chinese) are read aloud at the same time too.
+By default the worker works on **one video at a time** (sequential) — edge-tts throttles a flood of connections from one
+address (intermittent `NoAudioReceived`, 5–9 s per line), so three at once makes every one of them crawl. To go back to
+several at once, Settings → Narration → **Videos at once: Parallel (3 at a time)** (the worker never exceeds `WORKER_JOBS`,
+default 3). Whatever the setting, OCR, Whisper, translation and VieNeu each serve one video at a time: a video waits for its
+turn ("Waiting for OCR…" in the queue). The voices of one video (say Vietnamese and Chinese) are read aloud at the same
+time too.
 
 **Queue** (Settings → Narration): *Pause waiting* / *Resume paused* for all waiting videos, and per video **Top**
 (work on this one next), **Pause** (also for a running one: it stops at its next report and starts over when resumed),
@@ -62,7 +64,7 @@ run on its own (`docker build -t kellyfin-narrator .`) against the services else
 
 Other settings (environment): `WORKER_NAME` (unique per worker: a worker asking for work gets back the jobs
 still marked as its own, i.e. cut off by a restart), `POLL_SECONDS` (15), `WORK_DIR`, `TRANSLATE_WORKERS` (6),
-`EDGE_TTS_PARALLEL` (12, edge-tts lines in flight over every video and voice together), `EDGE_TTS_RETRIES` (3, rounds over the lines edge-tts failed on, after 10, 30, 90 s), `WORKER_JOBS` (3).
+`EDGE_TTS_PARALLEL` (12, edge-tts lines in flight over every video and voice together), `EDGE_TTS_RETRIES` (3, rounds over the lines edge-tts failed on, after 10, 30, 90 s), `WORKER_JOBS` (3, hard cap; Kellyfin's **Videos at once** setting under Settings → Narration decides, default one at a time).
 
 ## CPU only (no NVIDIA GPU)
 
