@@ -86,6 +86,7 @@ services:
       - WORKER_NAME=${WORKER_NAME:-film-sub-cpu}
       - FILMSUB_URL=http://nginx
       - WHISPER_MODEL=${WHISPER_MODEL:-medium}
+      - WORKER_JOBS=${WORKER_JOBS:-3}
     depends_on: [nginx]
 
 volumes:

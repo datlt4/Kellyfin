@@ -134,4 +134,6 @@ services:
       - "KELLYFIN_NARRATOR_TOKEN=${KELLYFIN_NARRATOR_TOKEN:?copy it from Kellyfin: Settings -> Narration}"
       - WORKER_NAME=${WORKER_NAME:-film-sub}
       - FILMSUB_URL=http://nginx
+      # Videos worked on at once: while one is read aloud (edge-tts waits for the Internet) the next is already in OCR/translation.
+      - WORKER_JOBS=${WORKER_JOBS:-3}
     depends_on: [nginx]

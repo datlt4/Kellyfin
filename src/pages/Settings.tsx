@@ -577,6 +577,15 @@ function Upscale() {
                 </div>
               </div>
               <div class="row-btns">
+                <Show when={j.status === "queued" || j.status === "paused"}>
+                  <button class="btn small" title="Work on this one next" onClick={() => act.run(async () => { await api(`/admin/narration/jobs/${j.id}/top`, { method: "POST" }); refetch(); })}>Top</button>
+                </Show>
+                <Show when={j.status === "queued" || j.status === "running"}>
+                  <button class="btn small" title={j.status === "running" ? "Stops it now; it starts over when resumed" : undefined} onClick={() => act.run(async () => { await api("/admin/narration/jobs/pause", { method: "POST", body: JSON.stringify({ ids: [j.id] }) }); refetch(); })}>Pause</button>
+                </Show>
+                <Show when={j.status === "paused"}>
+                  <button class="btn small" onClick={() => act.run(async () => { await api("/admin/narration/jobs/resume", { method: "POST", body: JSON.stringify({ ids: [j.id] }) }); refetch(); })}>Resume</button>
+                </Show>
                 <Show when={j.status === "failed"}>
                   <button class="btn small" onClick={() => act.run(async () => { await api("/admin/upscale/jobs", { method: "POST", body: JSON.stringify({ model: j.model, item_ids: [j.item_id] }) }); refetch(); })}>Retry</button>
                 </Show>
@@ -775,6 +784,16 @@ function Narration() {
       <section class="panel">
         <div class="panel-head">
           <h2>Queue</h2>
+          <For each={[["pause", "queued", "Pause waiting"], ["resume", "paused", "Resume paused"]] as const}>
+            {([what, status, label]) => (
+              <Show when={(ov()?.jobs ?? []).some((j) => j.status === status)}>
+                <button type="button" class="btn small" onClick={() => act.run(async () => {
+                  await api(`/admin/narration/jobs/${what}`, { method: "POST", body: JSON.stringify({ ids: [] }) });
+                  refetch();
+                })}>{label}</button>
+              </Show>
+            )}
+          </For>
           <For each={[["done", "Clear finished"], ["failed", "Clear failed"]] as const}>
             {([status, label]) => (
               <Show when={(ov()?.jobs ?? []).some((j) => j.status === status)}>
@@ -787,9 +806,10 @@ function Narration() {
           </For>
         </div>
         <p class="muted small">
-          {(ov()?.jobs ?? []).filter((j) => j.status === "running").length} on the GPU ·{" "}
+          {(ov()?.jobs ?? []).filter((j) => j.status === "running").length} running ·{" "}
           {(ov()?.jobs ?? []).filter((j) => j.status === "muxing").length} muxing ·{" "}
           {(ov()?.jobs ?? []).filter((j) => j.status === "queued").length} waiting ·{" "}
+          {(ov()?.jobs ?? []).filter((j) => j.status === "paused").length} paused ·{" "}
           {(ov()?.jobs ?? []).filter((j) => j.status === "done").length} done ·{" "}
           {(ov()?.jobs ?? []).filter((j) => j.status === "failed").length} failed
         </p>
@@ -803,7 +823,7 @@ function Narration() {
                   {j.status === "running" ? ` ${Math.round(j.progress * 100)}% on ${j.worker}` : ""}
                   {j.status === "muxing" ? " on the Kellyfin server" : ""}
                 </div>
-                <Show when={j.status !== "queued"}><Stages status={j.status} stage={j.stage} /></Show>
+                <Show when={j.status !== "queued" && j.status !== "paused"}><Stages status={j.status} stage={j.stage} /></Show>
                 <Show when={busy(j.status) && j.step}><div class="small">{j.step}</div></Show>
                 <Show when={j.error}><div class="error small">{j.error!.slice(0, 300)}</div></Show>
               </div>

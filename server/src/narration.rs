@@ -416,6 +416,16 @@ pub struct Hello {
     voices: Vec<String>,
     #[serde(default)]
     edge_voices: Vec<String>,
+    /// Jobs the worker is running now (it runs several): these are not cut off, so they are not put back.
+    #[serde(default)]
+    active: Vec<i64>,
+    /// false: only a report, every slot of the worker is busy.
+    #[serde(default = "yes")]
+    take: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Serialize)]
@@ -432,23 +442,32 @@ pub struct Claimed {
     config: Config,
 }
 
-/// Hands the worker the oldest queued job (204 when there is none).
+/// Hands the worker the next queued job: the ones moved to the top first, then the oldest (204 when there is none).
 pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json<Hello>) -> ApiResult<Response> {
     worker_auth(&st, &headers).await?;
     let worker = h.worker.clone();
+    let (active, take) = (serde_json::to_string(&h.active).map_err(anyhow::Error::from)?, h.take);
     st.narration_workers.touch(h);
+    if !take {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
     let now = util::now();
-    // A worker asking for work has none: a job still marked as its own was cut off (restart), so it goes back.
-    sqlx::query("UPDATE narration_jobs SET status = 'queued', step = NULL, progress = 0, updated_at = ?2 WHERE status = 'running' AND worker = ?1")
-        .bind(&worker)
-        .bind(now)
-        .execute(&st.db)
-        .await?;
+    // A job still marked as the worker's own, that it does not list as running, was cut off (restart): back it goes.
+    sqlx::query(
+        "UPDATE narration_jobs SET status = 'queued', step = NULL, progress = 0, updated_at = ?2
+         WHERE status = 'running' AND worker = ?1 AND id NOT IN (SELECT value FROM json_each(?3))",
+    )
+    .bind(&worker)
+    .bind(now)
+    .bind(&active)
+    .execute(&st.db)
+    .await?;
     let Some((job_id, item_id, source, langs, graph)): Option<(i64, i64, String, String, Option<String>)> = sqlx::query_as(
         "UPDATE narration_jobs SET status = 'running', worker = ?1, stage = 0, step = 'starting', progress = 0, error = NULL,
            updated_at = ?2
          WHERE id = (SELECT id FROM narration_jobs
-                     WHERE status = 'queued' OR (status = 'running' AND updated_at < ?3) ORDER BY id LIMIT 1)
+                     WHERE status = 'queued' OR (status = 'running' AND updated_at < ?3 AND COALESCE(worker, '') != ?1)
+                     ORDER BY priority DESC, id LIMIT 1)
          RETURNING id, item_id, source, langs, pipeline",
     )
     .bind(&worker)
@@ -567,8 +586,11 @@ pub async fn progress(State(st): State<AppState>, headers: HeaderMap, Path(id): 
     .bind(id)
     .fetch_optional(&st.db)
     .await?;
-    if let Some(Some(w)) = worker {
-        st.narration_workers.alive(&w);
+    match worker {
+        Some(Some(w)) => st.narration_workers.alive(&w),
+        // Deleted or paused meanwhile: the worker stops this job.
+        None => return Ok(StatusCode::GONE),
+        _ => {}
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -614,14 +636,18 @@ pub async fn upload(State(st): State<AppState>, headers: HeaderMap, Path((id, na
 /// The worker has uploaded everything: the server muxes (stage 4) and the worker takes the next video.
 pub async fn done(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<i64>) -> ApiResult<StatusCode> {
     worker_auth(&st, &headers).await?;
-    sqlx::query(
+    let n = sqlx::query(
         "UPDATE narration_jobs SET status = 'muxing', stage = 4, step = 'Waiting to mux (Kellyfin server)', progress = 0.9,
-           error = NULL, updated_at = ? WHERE id = ?",
+           error = NULL, updated_at = ? WHERE id = ? AND status = 'running'",
     )
     .bind(util::now())
     .bind(id)
     .execute(&st.db)
-    .await?;
+    .await?
+    .rows_affected();
+    if n == 0 {
+        return Ok(StatusCode::GONE); // deleted or paused while the worker finished: nothing to mux
+    }
     tokio::spawn(mux(st, id));
     Ok(StatusCode::NO_CONTENT)
 }
@@ -659,8 +685,9 @@ pub async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<O
         "SELECT j.id, j.item_id, i.title, l.name AS library, j.preset, j.source, j.langs, j.status, j.stage, j.step, j.progress, j.error,
            j.worker, j.updated_at
          FROM narration_jobs j JOIN items i ON i.id = j.item_id JOIN libraries l ON l.id = i.library_id
-         ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'muxing' THEN 0 WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END,
-           j.id DESC
+         ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'muxing' THEN 0 WHEN 'queued' THEN 1 WHEN 'paused' THEN 2 WHEN 'failed' THEN 3 ELSE 4 END,
+           CASE WHEN j.status IN ('queued', 'paused') THEN -j.priority ELSE 0 END,
+           CASE WHEN j.status IN ('queued', 'paused') THEN j.id ELSE -j.id END
          LIMIT 500",
     )
     .fetch_all(&st.db)
@@ -829,6 +856,57 @@ pub async fn clear(State(st): State<AppState>, _a: Admin, Json(c): Json<Clear>) 
         let _ = tokio::fs::remove_dir_all(dir(&st.cfg.data, *item)).await; // a failed job's leftover uploads
     }
     Ok(Json(items.len() as u64))
+}
+
+#[derive(Deserialize)]
+pub struct Which {
+    /// Empty: every waiting (or every paused) job.
+    #[serde(default)]
+    ids: Vec<i64>,
+}
+
+/// Pauses waiting jobs (all, or the listed ones). A listed running job stops where it is (the worker is told at its
+/// next report) and starts over when resumed.
+pub async fn pause(State(st): State<AppState>, _a: Admin, Json(w): Json<Which>) -> ApiResult<Json<u64>> {
+    let ids = serde_json::to_string(&w.ids).map_err(anyhow::Error::from)?;
+    let n = sqlx::query(
+        "UPDATE narration_jobs SET status = 'paused', stage = 0, step = NULL, progress = 0, updated_at = ?1
+         WHERE (status = 'queued' AND (json_array_length(?2) = 0 OR id IN (SELECT value FROM json_each(?2))))
+            OR (status = 'running' AND id IN (SELECT value FROM json_each(?2)))",
+    )
+    .bind(util::now())
+    .bind(ids)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
+    Ok(Json(n))
+}
+
+pub async fn resume_jobs(State(st): State<AppState>, _a: Admin, Json(w): Json<Which>) -> ApiResult<Json<u64>> {
+    let ids = serde_json::to_string(&w.ids).map_err(anyhow::Error::from)?;
+    let n = sqlx::query(
+        "UPDATE narration_jobs SET status = 'queued', updated_at = ?1
+         WHERE status = 'paused' AND (json_array_length(?2) = 0 OR id IN (SELECT value FROM json_each(?2)))",
+    )
+    .bind(util::now())
+    .bind(ids)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
+    Ok(Json(n))
+}
+
+/// Moves a waiting (or paused) job in front of every other: the worker claims it next.
+pub async fn top(State(st): State<AppState>, _a: Admin, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    sqlx::query(
+        "UPDATE narration_jobs SET status = 'queued', updated_at = ?1, priority = (SELECT COALESCE(MAX(priority), 0) + 1 FROM narration_jobs)
+         WHERE id = ?2 AND status IN ('queued', 'paused')",
+    )
+    .bind(util::now())
+    .bind(id)
+    .execute(&st.db)
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// A failed job runs again with the pipeline it was queued with.

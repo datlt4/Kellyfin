@@ -17,6 +17,18 @@ Whisper" and "Default · OCR"; duplicate one to make your own), in four stages s
 4. **Mux**, on the Kellyfin server: the voice over the original sound, which ducks while the voice speaks. The worker
    hands the voice over and takes the next video meanwhile.
 
+## Several videos at once
+
+The worker works on up to `WORKER_JOBS` videos (default 3) at the same time, but OCR, Whisper, translation and VieNeu
+each serve one video at a time: a video waits for its turn ("Waiting for OCR…" in the queue) while the others go on.
+So while one video is read aloud by edge-tts, which mostly waits for the Internet, the next one is already in OCR
+or translation. The voices of one video (say Vietnamese and Chinese) are read aloud at the same time too.
+
+**Queue** (Settings → Narration): *Pause waiting* / *Resume paused* for all waiting videos, and per video **Top**
+(work on this one next), **Pause** (also for a running one: it stops at its next report and starts over when resumed),
+**Resume**, **Delete** (a running video is stopped too). To put one episode first: *Pause waiting*, then *Top* on it
+(or just *Top*); with every slot busy it starts when one of them finishes, or *Pause* one that is running.
+
 ## Run it
 
 On a machine with an NVIDIA GPU (Docker + NVIDIA Container Toolkit, ~10 GB of GPU memory):
@@ -39,7 +51,7 @@ run on its own (`docker build -t kellyfin-narrator .`) against the services else
 
 Other settings (environment): `WORKER_NAME` (unique per worker: a worker asking for work gets back the jobs
 still marked as its own, i.e. cut off by a restart), `POLL_SECONDS` (15), `WORK_DIR`, `TRANSLATE_WORKERS` (6),
-`EDGE_TTS_PARALLEL` (12).
+`EDGE_TTS_PARALLEL` (12, lines of one voice read at once), `WORKER_JOBS` (3).
 
 ## CPU only (no NVIDIA GPU)
 

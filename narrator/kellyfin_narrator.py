@@ -18,6 +18,7 @@ Environment: KELLYFIN_URL, KELLYFIN_NARRATOR_TOKEN (Settings -> Narration), FILM
 compose's nginx), WORKER_NAME, POLL_SECONDS (15), WORK_DIR, TRANSLATE_WORKERS (6), EDGE_TTS_PARALLEL (12).
 """
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -43,7 +45,12 @@ TRANSLATE_WORKERS = int(os.environ.get("TRANSLATE_WORKERS", "6"))
 EDGE_PARALLEL = int(os.environ.get("EDGE_TTS_PARALLEL", "12"))
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL") or "medium"  # baked into the Whisper image: tiny, small, medium
 WHISPER_TIMEOUT = int(os.environ.get("WHISPER_TIMEOUT") or 4 * 3600)  # seconds per video (a CPU takes long)
+WORKER_JOBS = int(os.environ.get("WORKER_JOBS") or 3)  # videos worked on at once (see "RES")
 SR = 48000
+
+# One video at a time in each of these (they are heavy), so while one video is read aloud (edge-tts, mostly waiting
+# for the Internet) the next can already be in OCR, Whisper or translation.
+RES = {name: threading.Lock() for name in ("whisper", "ocr", "translate", "vieneu")}
 
 
 def log(*a):
@@ -52,6 +59,10 @@ def log(*a):
 
 class JobError(Exception):
     """A failure worth showing in Settings as is."""
+
+
+class JobCancelled(Exception):
+    """The job was deleted or paused in Settings: stop, leave nothing behind, report nothing."""
 
 
 # ---------- Kellyfin ----------
@@ -633,8 +644,25 @@ def process(job):
         part = (done[stage] + frac) / max(1, count[stage])
         try:
             kf_json("POST", f"/narrator/jobs/{jid}/progress", {"stage": stage, "step": label, "progress": a + w * min(1, part)})
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 410:
+                raise JobCancelled() from e
         except Exception:
             pass
+
+    @contextlib.contextmanager
+    def exclusive(name, stage, waiting):
+        """Holds one of the heavy services alone; while another video has it, this one says so (and reports, which
+        keeps the job alive on the server and lets a deletion reach it)."""
+        lock = RES[name]
+        if not lock.acquire(blocking=False):
+            step(stage, waiting)
+            while not lock.acquire(timeout=20):
+                step(stage, waiting)
+        try:
+            yield
+        finally:
+            lock.release()
 
     @retried
     def existing(lang):
@@ -679,7 +707,9 @@ def process(job):
         elif kind == "whisper":
             audio = fetch("audio")
             step(1, f"Transcribing {'the spoken language' if lang == 'auto' else lang} (Whisper)")
-            cues = whisper(base, audio, lang, tmp)
+            with exclusive("whisper", 1, "Waiting for Whisper (another video is being transcribed)"):
+                step(1, f"Transcribing {'the spoken language' if lang == 'auto' else lang} (Whisper)")
+                cues = whisper(base, audio, lang, tmp)
             if lang == "auto":
                 lang = detect(base, cues)
                 log(f"job {jid}: spoken language {lang}")
@@ -690,7 +720,9 @@ def process(job):
             langs = [lang] + [l for l in n.get("also") or [] if l != lang]
             label = f"Reading the burned-in {'+'.join(langs)} subtitles (OCR)"
             step(1, label)
-            cues = ocr(base, video, langs, n.get("crop") or 0.35, duration, lambda f, label=label: step(1, label, f))
+            with exclusive("ocr", 1, "Waiting for OCR (another video is being read)"):
+                step(1, label)
+                cues = ocr(base, video, langs, n.get("crop") or 0.35, duration, lambda f, label=label: step(1, label, f))
             log(f"job {jid}: OCR found {len(cues)} {lang} lines")
             texts[nid] = (lang, cues)
             keep(lang, cues)
@@ -705,7 +737,9 @@ def process(job):
                 else:
                     label = f"Translating {src} → {lang} (Argos)"
                     step(2, label)
-                    texts[nid] = (lang, translate(base, cues, src, lang, lambda f, label=label: step(2, label, f)))
+                    with exclusive("translate", 2, "Waiting for translation (another video is being translated)"):
+                        step(2, label)
+                        texts[nid] = (lang, translate(base, cues, src, lang, lambda f, label=label: step(2, label, f)))
                     keep(lang, texts[nid][1])
         if kind in STAGE:
             done[STAGE[kind]] += 1
@@ -718,6 +752,8 @@ def process(job):
         for nid in order:
             if nodes[nid]["type"] == "translate" or (nodes[nid]["type"] in ("whisper", "ocr") and nid not in used):
                 produce(nid)
+        # The voices (say Vietnamese and Chinese) are read aloud at the same time.
+        plan = []
         for nid in order:
             n = nodes[nid]
             if n["type"] != "voice":
@@ -728,13 +764,17 @@ def process(job):
                 raise JobError(f"no {lang} lines to read out")
             if not duration:  # unprobed video: the timeline ends with the last line
                 duration = max(c[1] for c in cues) + 1
+            plan.append((n, lang, cues))
+
+        def speak(n, lang, cues):
             wav = os.path.join(tmp, f"{lang}.voice.wav")
             if n.get("engine") == "vieneu":
                 label = "Reading vi aloud (VieNeu)"
-                step(3, label)
                 srt = os.path.join(tmp, f"{lang}.voice.srt")
                 write_srt(cues, srt)
-                tts_vi(base, srt, n.get("voice") or job["voice_vi"], wav, lambda f, label=label: step(3, label, f))
+                with exclusive("vieneu", 3, "Waiting for VieNeu (another video is being read)"):
+                    step(3, label)
+                    tts_vi(base, srt, n.get("voice") or job["voice_vi"], wav, lambda f, label=label: step(3, label, f))
             else:
                 voice = n.get("voice") or (job["voice_zh"] if lang == "zh" else EDGE_VOICES.get(lang))
                 if not voice:
@@ -747,6 +787,10 @@ def process(job):
             kf_upload(jid, f"{lang}.voice.flac", flac)
             log(f"job {jid}: {lang} voice uploaded ({os.path.getsize(flac) >> 20} MB)")
             done[3] += 1
+
+        with ThreadPoolExecutor(max(1, len(plan))) as pool:
+            for f in [pool.submit(speak, *p) for p in plan]:
+                f.result()
         kf_json("POST", f"/narrator/jobs/{jid}/done")
         log(f"job {jid}: handed to Kellyfin for the mux")
     finally:
@@ -824,13 +868,31 @@ def health():
     return checks, voices
 
 
+def run_job(job):
+    try:
+        process(job)
+    except JobCancelled:
+        log(f"job {job['job_id']}: deleted or paused in Settings, stopped")
+    except Exception as e:
+        msg = str(e) if isinstance(e, JobError) else f"{type(e).__name__}: {e}"
+        log(f"job {job['job_id']}: failed: {msg}")
+        try:
+            kf_json("POST", f"/narrator/jobs/{job['job_id']}/fail", {"error": msg})
+        except Exception:
+            pass
+
+
 def main():
-    log(f"worker {NAME} -> {SERVER}, film-sub {FILMSUB}")
+    log(f"worker {NAME} -> {SERVER}, film-sub {FILMSUB}, up to {WORKER_JOBS} videos at once")
+    running = {}  # job id -> thread
     while True:
-        checks, voices = health()
+        running = {i: t for i, t in running.items() if t.is_alive()}
+        # While videos are in work the services are busy: the last check stands (a probe could time out behind a job).
+        checks, voices = (_report["checks"], _report["voices"]) if running and _report["checks"] else health()
         try:
             r = kf.post(kf_url("/narrator/claim"), json={"worker": NAME, "checks": checks, "voices": voices,
-                                                         "edge_voices": _report["edge_voices"]}, timeout=60)
+                                                         "edge_voices": _report["edge_voices"], "active": list(running),
+                                                         "take": len(running) < WORKER_JOBS}, timeout=60)
             if r.status_code in (401, 403):
                 log("server refused the token (KELLYFIN_NARRATOR_TOKEN, Settings -> Narration)")
                 time.sleep(POLL * 4)
@@ -841,18 +903,12 @@ def main():
             time.sleep(POLL)
             continue
         if r.status_code != 200:
-            time.sleep(POLL)
+            time.sleep(5 if running else POLL)
             continue
         job = r.json()
-        try:
-            process(job)
-        except Exception as e:
-            msg = str(e) if isinstance(e, JobError) else f"{type(e).__name__}: {e}"
-            log(f"job {job['job_id']}: failed: {msg}")
-            try:
-                kf_json("POST", f"/narrator/jobs/{job['job_id']}/fail", {"error": msg})
-            except Exception:
-                pass
+        t = threading.Thread(target=run_job, args=(job,), daemon=True)
+        t.start()
+        running[job["job_id"]] = t  # and the next one straight away, until every slot is taken
 
 
 if __name__ == "__main__":
