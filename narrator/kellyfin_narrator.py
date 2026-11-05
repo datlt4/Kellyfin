@@ -41,6 +41,8 @@ FILMSUB = (os.environ.get("FILMSUB_URL") or "http://nginx").rstrip("/")
 WORK = os.environ.get("WORK_DIR") or tempfile.gettempdir()
 TRANSLATE_WORKERS = int(os.environ.get("TRANSLATE_WORKERS", "6"))
 EDGE_PARALLEL = int(os.environ.get("EDGE_TTS_PARALLEL", "12"))
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL") or "medium"  # baked into the Whisper image: tiny, small, medium
+WHISPER_TIMEOUT = int(os.environ.get("WHISPER_TIMEOUT") or 4 * 3600)  # seconds per video (a CPU takes long)
 SR = 48000
 
 
@@ -146,7 +148,7 @@ def whisper(base, audio, lang, tmp):
                    check=True)
     with open(wav, "rb") as f:
         r = requests.post(f"{base}/whisper/v1/transcribe", files={"file": ("speech.wav", f, "audio/wav")},
-                          data={"model": "medium", "language": lang}, timeout=3600)
+                          data={"model": WHISPER_MODEL, "language": lang}, timeout=WHISPER_TIMEOUT)
     r.raise_for_status()
     cues = dedupe(parse_srt(r.text))
     if not cues:

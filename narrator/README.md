@@ -41,6 +41,23 @@ Other settings (environment): `WORKER_NAME` (unique per worker: a worker asking 
 still marked as its own, i.e. cut off by a restart), `POLL_SECONDS` (15), `WORK_DIR`, `TRANSLATE_WORKERS` (6),
 `EDGE_TTS_PARALLEL` (12).
 
+## CPU only (no NVIDIA GPU)
+
+```sh
+docker compose -f docker-compose.cpu.yml up -d     # instead of docker-compose.yml, not next to it
+```
+
+Same services, same worker, no GPU: Whisper (int8) and EasyOCR run on the CPU, VieNeu is one instance on the CPU
+(its v3 Turbo model runs through ONNX; it is downloaded from Hugging Face on the first start, which takes a few
+minutes and needs the Internet, then kept in the `vieneu_model` volume). About 8 GB of free memory.
+Whisper's model is `WHISPER_MODEL` in `.env`: `medium` (default) or `small` (about 2.5 times faster, a little less exact).
+
+What it costs, measured on a 12-thread desktop CPU with short samples (real films will differ): Whisper `medium`
+0.25 × the length of the speech (`small` 0.09 ×), so about 11 min for a 45-minute episode; VieNeu 0.45 × the length of
+the voice it makes (8 lines, 41 s of voice in 18 s); EasyOCR about 1 s for each frame it reads, and it reads only the
+frames where the subtitle band changed (the 40 s test video took 32 s). Translation (Argos) and the edge-tts Chinese
+voice are the same as with a GPU. Video stays untouched except for the added tracks, as always.
+
 ## Languages
 
 Whisper hears many languages; translation needs an Argos model for the spoken language. The compose loads

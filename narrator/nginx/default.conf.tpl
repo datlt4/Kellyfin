@@ -32,8 +32,8 @@ server {
     # faster-whisper: POST /whisper/v1/transcribe, GET /whisper/health
     location /whisper/ {
         proxy_pass http://whisper:9000/;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
+        proxy_read_timeout 14400s;
+        proxy_send_timeout 14400s;
         proxy_request_buffering off;
     }
 
