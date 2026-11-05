@@ -260,26 +260,12 @@ async fn library_items(
     Ok(Json(ItemPage { total, items }))
 }
 
-#[derive(Serialize)]
-struct Folder {
-    name: String,
-    items: Vec<Card>,
-}
-
-/// The whole library by folder: folders in natural order, each with its videos in order.
-async fn library_tree(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> ApiResult<Json<Vec<Folder>>> {
+/// The whole library as one nested folder tree, however many levels the folders have: the videos sit at the leaves.
+async fn library_tree(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> ApiResult<Json<crate::tree::Nested<Card>>> {
     let order = crate::tree::entries(&st.db, id).await?;
     let cards: Vec<Card> = sqlx::query_as(&format!("{CARD} WHERE i.library_id = ?2")).bind(user.id).bind(id).fetch_all(&st.db).await?;
     let mut by_id: std::collections::HashMap<i64, Card> = cards.into_iter().map(|c| (c.id, c)).collect();
-    let mut out: Vec<Folder> = Vec::new();
-    for e in order {
-        let Some(card) = by_id.remove(&e.id) else { continue };
-        match out.last_mut() {
-            Some(f) if f.name == e.folder => f.items.push(card),
-            _ => out.push(Folder { name: e.folder, items: vec![card] }),
-        }
-    }
-    Ok(Json(out))
+    Ok(Json(crate::tree::nest(order, |id| by_id.remove(&id))))
 }
 
 #[derive(Serialize, sqlx::FromRow)]

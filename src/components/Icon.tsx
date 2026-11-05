@@ -23,6 +23,7 @@ const PATHS = {
   film: "M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4z",
   grid: "M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z",
   tree: "M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8z",
+  "tree-grid": "M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8z",
   list: "M3 5h4v4H3zm6 1h12v2H9zM3 11h4v4H3zm6 1h12v2H9zM3 17h4v4H3zm6 1h12v2H9z",
   close: "M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z",
   left: "M15.4 7.4 14 6l-6 6 6 6 1.4-1.4-4.6-4.6z",
@@ -36,6 +37,18 @@ const PATHS = {
 export type IconName = keyof typeof PATHS;
 
 export default function Icon(props: { name: IconName; size?: number }) {
+  // Folder outline with a grid inside: stroke + fill in the same colour, so it reads on any button background.
+  if (props.name === "tree-grid") {
+    return (
+      <svg class="ico" viewBox="0 0 24 24" width={props.size ?? 22} height={props.size ?? 22} fill="currentColor" aria-hidden="true">
+        <path d={PATHS["tree-grid"]} fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+        <rect x="8" y="10.4" width="3.1" height="3.1" rx="0.5" stroke="none" />
+        <rect x="12.9" y="10.4" width="3.1" height="3.1" rx="0.5" stroke="none" />
+        <rect x="8" y="15.1" width="3.1" height="3.1" rx="0.5" stroke="none" />
+        <rect x="12.9" y="15.1" width="3.1" height="3.1" rx="0.5" stroke="none" />
+      </svg>
+    );
+  }
   return (
     <svg class="ico" viewBox="0 0 24 24" width={props.size ?? 22} height={props.size ?? 22} fill="currentColor" aria-hidden="true">
       <path d={PATHS[props.name]} />
