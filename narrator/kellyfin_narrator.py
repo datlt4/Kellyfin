@@ -30,6 +30,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from difflib import SequenceMatcher
 
 import numpy as np
@@ -155,14 +156,24 @@ def need(base, path, what):
         raise JobError(f"{what} at {base}{path} does not answer: {e}") from e
 
 
-def whisper(base, audio, lang, tmp):
+def whisper(base, audio, lang, tmp, alive=lambda: None):
     need(base, "/whisper/health", "Whisper")
     wav = os.path.join(tmp, "speech.wav")
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", audio, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav],
                    check=True)
-    with open(wav, "rb") as f:
-        r = requests.post(f"{base}/whisper/v1/transcribe", files={"file": ("speech.wav", f, "audio/wav")},
-                          data={"model": WHISPER_MODEL, "language": lang}, timeout=WHISPER_TIMEOUT)
+    ex = ThreadPoolExecutor(1)
+    try:
+        with open(wav, "rb") as f:
+            fut = ex.submit(requests.post, f"{base}/whisper/v1/transcribe", files={"file": ("speech.wav", f, "audio/wav")},
+                            data={"model": WHISPER_MODEL, "language": lang}, timeout=WHISPER_TIMEOUT)
+            while True:
+                try:
+                    r = fut.result(timeout=15)
+                    break
+                except FutureTimeout:
+                    alive()  # raises JobCancelled when the job was deleted or paused
+    finally:
+        ex.shutdown(wait=False)  # an abandoned request ends by itself
     r.raise_for_status()
     cues = dedupe(parse_srt(r.text))
     if not cues:
@@ -221,8 +232,11 @@ def translate(base, cues, source, lang, on_progress):
             on_progress(done[0] / len(cues))
         return (cue[0], cue[1], (r.json().get("translatedText") or "").strip() or cue[2])
 
-    with ThreadPoolExecutor(TRANSLATE_WORKERS) as ex:
+    ex = ThreadPoolExecutor(TRANSLATE_WORKERS)
+    try:
         out = list(ex.map(one, cues))
+    finally:
+        ex.shutdown(wait=True, cancel_futures=True)  # a stopped job does not send the rest
     if all(a[2] == b[2] for a, b in zip(out, cues)):
         raise JobError(f"Argos returned the {source} text unchanged for {lang}")
     return out
@@ -602,24 +616,30 @@ def ocr(base, video, langs, crop, duration, on_progress):
 
     reads, last, since, i = [], None, 0, 0
     total = max(1, int(duration * 2))
-    while True:
-        frame = p.stdout.read(size)
-        if len(frame) < size:
-            break
-        t = i / 2
-        i += 1
-        g = np.frombuffer(frame, np.uint8).reshape(oh, ow, 3)[:, :cols * step].reshape(oh, cols, step, 3).mean(axis=(2, 3))
-        since += 1
-        if last is not None and since < RECHECK:
-            d = np.abs(g - last)
-            # A small caption over a still picture moves the mean little but one cell a lot.
-            r, c = oh // 8, cols // 8
-            if d.mean() < DIFF_HI and d[:r * 8, :c * 8].reshape(r, 8, c, 8).mean(axis=(1, 3)).max() < DIFF_CELL:
-                continue
-        last, since = g, 0
-        reads.append((t, read(frame)))
-        if i % 120 == 0:
-            on_progress(min(1.0, i / total))
+    reported = time.time()
+    try:
+        while True:
+            frame = p.stdout.read(size)
+            if len(frame) < size:
+                break
+            t = i / 2
+            i += 1
+            if time.time() - reported >= 8:  # on_progress also tells us the job was deleted or paused (it raises)
+                on_progress(min(1.0, i / total))
+                reported = time.time()
+            g = np.frombuffer(frame, np.uint8).reshape(oh, ow, 3)[:, :cols * step].reshape(oh, cols, step, 3).mean(axis=(2, 3))
+            since += 1
+            if last is not None and since < RECHECK:
+                d = np.abs(g - last)
+                # A small caption over a still picture moves the mean little but one cell a lot.
+                r, c = oh // 8, cols // 8
+                if d.mean() < DIFF_HI and d[:r * 8, :c * 8].reshape(r, 8, c, 8).mean(axis=(1, 3)).max() < DIFF_CELL:
+                    continue
+            last, since = g, 0
+            reads.append((t, read(frame)))
+    finally:
+        if p.poll() is None:
+            p.kill()  # a stopped job must not leave the decoder running
     p.wait()
     stills = mark_still(reads, i / 2)
     # Left-aligned subtitles are rare: fall back to any position when nothing is centred.
@@ -731,8 +751,9 @@ def process(job):
             audio = fetch("audio")
             step(1, f"Transcribing {'the spoken language' if lang == 'auto' else lang} (Whisper)")
             with exclusive("whisper", 1, "Waiting for Whisper (another video is being transcribed)"):
-                step(1, f"Transcribing {'the spoken language' if lang == 'auto' else lang} (Whisper)")
-                cues = whisper(base, audio, lang, tmp)
+                label = f"Transcribing {'the spoken language' if lang == 'auto' else lang} (Whisper)"
+                step(1, label)
+                cues = whisper(base, audio, lang, tmp, alive=lambda: step(1, label))
             if lang == "auto":
                 lang = detect(base, cues)
                 log(f"job {jid}: spoken language {lang}")
