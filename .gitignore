@@ -7,3 +7,5 @@ server/data/
 dist-mobile/
 build/
 dist-desktop/
+__pycache__/
+*.pyc
