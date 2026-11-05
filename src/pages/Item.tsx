@@ -5,6 +5,7 @@ import { ItemCard, LibCard } from "../components/Card";
 import Row from "../components/Row";
 import Icon from "../components/Icon";
 import Select from "../components/Select";
+import { notify } from "../components/Toast";
 import { audioStreams, defaultAudio, defaultSub } from "../playback";
 
 export default function Item() {
@@ -64,7 +65,7 @@ export default function Item() {
     if (preset === null) return;
     await checkNarration(preset.graph);
     await api("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [item()!.id], preset: preset.id }) });
-    alert("Queued. Progress: Settings → Narration.");
+    notify("Queued. Progress: Settings → Narration.");
   }
 
   async function autoImage() {
@@ -128,7 +129,7 @@ export default function Item() {
                 <button class="btn small" onClick={changeImage}>Change image</button>
                 <button class="btn small" onClick={autoImage} title="Grab a frame from the video">Auto image</button>
                 <button class="btn small" onClick={() => aiUpscale().catch((e) => alert(e.message))}>AI upscale</button>
-                <button class="btn small" onClick={() => narrate().catch((e) => alert(e.message))}>Narration</button>
+                <button class="btn small" onClick={() => narrate().catch((e) => notify(e.message, false))}>Narration</button>
               </div>
               <p class="path">{it().path}</p>
             </Show>

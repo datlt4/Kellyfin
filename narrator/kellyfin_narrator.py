@@ -636,10 +636,13 @@ def process(job):
     tmp = tempfile.mkdtemp(prefix=f"narration-{jid}-", dir=WORK)
     # Progress bar: 1 subtitles 0-30 %, 2 translation 30-50 %, 3 voices 50-90 % (4, the mux, is Kellyfin's).
     span = {1: (0.0, 0.3), 2: (0.3, 0.2), 3: (0.5, 0.4)}
+    reused = set()  # languages whose subtitles the video's folder already had: no OCR / Whisper / translation for them
     count = {k: sum(1 for n in nodes.values() if STAGE.get(n["type"]) == k) for k in span}
     done = {k: 0 for k in span}
 
     def step(stage, label, frac=0.0):
+        if stage == 3 and reused:  # the later stages would otherwise hide why the first two took no time
+            label = f"{label} · subtitles reused: {', '.join(sorted(reused))}"
         a, w = span[stage]
         part = (done[stage] + frac) / max(1, count[stage])
         try:
@@ -668,6 +671,8 @@ def process(job):
     def existing(lang):
         r = kf.get(kf_url(f"/narrator/jobs/{jid}/subtitle/{subs[lang]}"), timeout=300)
         r.raise_for_status()
+        reused.add(lang)
+        log(f"job {jid}: {lang} subtitles reused from the video's folder")
         return parse_srt(r.text)
 
     uploaded = set()

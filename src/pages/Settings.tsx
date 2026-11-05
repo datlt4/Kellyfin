@@ -564,6 +564,7 @@ function Upscale() {
       </form>
       <section class="panel">
         <h2>Jobs</h2>
+        <act.Note />
         <For each={ov()?.jobs} fallback={<p class="muted">No jobs yet.</p>}>
           {(j) => (
             <div class="suspect">
@@ -779,6 +780,7 @@ function Narration() {
           <Select value={preset()} onChange={setPreset} options={(presets() ?? []).map((p) => ({ value: p.id, label: p.name }))} />
         </label>
         <button class="btn primary" disabled={!lib()}>Check server and queue</button>
+        <act.Note />
         <p class="muted small">Single videos: the “Narration” button on a video's page; a whole library: also on its page.</p>
       </form>
       <section class="panel">

@@ -4,6 +4,7 @@ import { api, checkNarration, fmtDuration, fmtRes, img, pickPreset, user, type C
 import { ItemCard } from "../components/Card";
 import Icon from "../components/Icon";
 import Select from "../components/Select";
+import { notify } from "../components/Toast";
 
 const PAGE = 120;
 
@@ -85,7 +86,7 @@ export default function Library() {
     if (preset === null) return;
     await checkNarration(preset.graph);
     const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: lib()!.id, preset: preset.id }) });
-    alert(`${n} videos queued. Progress: Settings → Narration.`);
+    notify(n ? `${n} videos queued. Progress: Settings → Narration.` : "Nothing new to queue: every video is already in the queue or done (delete a job to redo it).");
   }
 
   return (
@@ -97,7 +98,7 @@ export default function Library() {
         </div>
         <div class="head-tools">
           <Show when={user()?.is_admin && lib()}>
-            <button class="btn small" onClick={() => narrate().catch((e) => alert(e.message))} title="Vietnamese and Chinese voice-over for every video">Narration</button>
+            <button class="btn small" onClick={() => narrate().catch((e) => notify(e.message, false))} title="Vietnamese and Chinese voice-over for every video">Narration</button>
           </Show>
           <Select value={sort()} onChange={(v) => setSort(v as "title" | "added")}
             options={[{ value: "title", label: "A – Z" }, { value: "added", label: "Recently added" }]} />
