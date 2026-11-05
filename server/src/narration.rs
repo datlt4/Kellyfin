@@ -896,6 +896,69 @@ pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) 
     Ok(Json(QueueResult { queued: added, skipped }))
 }
 
+#[derive(Deserialize)]
+pub struct InputCheck {
+    library_id: i64,
+    /// Same preset argument as `queue`: a built-in id or a saved preset's number.
+    #[serde(default)]
+    preset: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct InputCheckResult {
+    /// Videos of the library with none of the pipeline's input subtitles (relative to the library's folders); a queue would skip them.
+    videos_without_input: Vec<String>,
+    /// Subtitle files with no video or audio file beside them (relative to the library's folders): a lesson outputs audio only.
+    subtitles_without_video: Vec<String>,
+}
+
+/// File name relative to the longest root that holds it (the library's folder), e.g. "03 - Sketching/003 x.mp4".
+fn rel(roots: &[String], path: &str) -> String {
+    use std::path::Path;
+    roots
+        .iter()
+        .filter_map(|r| Path::new(path).strip_prefix(r).ok().map(|p| p.to_path_buf()))
+        .min_by_key(|p| p.components().count())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned())
+}
+
+/// What queueing with this pipeline would do: which videos lack its input subtitles (skipped), and which subtitle files
+/// have no video or audio file (a lesson outputs audio only). Both lists are relative to the library's folders.
+pub async fn input_check(State(st): State<AppState>, _a: Admin, Json(q): Json<InputCheck>) -> ApiResult<Json<InputCheckResult>> {
+    let (_name, graph) = preset(&st, q.preset.as_deref().unwrap_or("whisper")).await?;
+    let input_langs: Vec<String> = graph.nodes.iter().filter(|n| n.kind == "subtitle").map(|n| n.lang.clone()).collect();
+    let only_subs = !pipeline_has_media_source(&graph);
+    let roots: Vec<String> = sqlx::query_scalar("SELECT path FROM library_paths WHERE library_id = ?").bind(q.library_id).fetch_all(&st.db).await?;
+    let mut no_input: Vec<String> = Vec::new();
+    if !input_langs.is_empty() && only_subs {
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as("SELECT path, streams FROM items WHERE library_id = ?").bind(q.library_id).fetch_all(&st.db).await?;
+        for (path, streams) in rows {
+            let streams: Value = streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+            let p = path.clone();
+            let tracks = tokio::task::spawn_blocking(move || crate::stream::subtitle_tracks(&p, &streams)).await.unwrap_or_default();
+            let subs = sub_map(&path, tracks);
+            let missing = input_langs.iter().any(|l| match lang_code(l) {
+                Some(c) => !subs.contains_key(c),
+                None => true,
+            });
+            if missing {
+                no_input.push(rel(&roots, &path));
+            }
+        }
+        no_input.sort();
+        no_input.truncate(100);
+    }
+    let roots2 = roots.clone();
+    let orphans = tokio::task::spawn_blocking(move || crate::scan::walk(&roots2, true).into_keys().filter(|p| util::is_srt(p)).collect::<Vec<_>>())
+        .await
+        .unwrap_or_default();
+    let mut orphans: Vec<String> = orphans.into_iter().map(|p| rel(&roots, &p)).collect();
+    orphans.sort();
+    orphans.truncate(100);
+    Ok(Json(InputCheckResult { videos_without_input: no_input, subtitles_without_video: orphans }))
+}
+
 // ---------- Presets ----------
 
 #[derive(Serialize)]

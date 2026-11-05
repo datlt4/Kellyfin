@@ -2,7 +2,7 @@ import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
 import {
   activeServer, api, ApiError, appVersion, fmtClock, img, isTauri, refreshUser, serverVersion, upload, user,
-  checkNarration, type Info, type Lib, type LibRow, type NarrationConfig, type PipeGraph, type Preset, type NarrationOverview, type ScanStatus, type UpscaleOverview, type UserRow,
+  checkNarration, type Info, type Lib, type LibRow, type NarrationConfig, type NarrationInputCheck, type PipeGraph, type Preset, type NarrationOverview, type ScanStatus, type UpscaleOverview, type UserRow,
 } from "../api";
 import FolderPicker from "../components/FolderPicker";
 import PipelineEditor from "../components/PipelineEditor";
@@ -700,6 +700,18 @@ function Narration() {
   const [lib, setLib] = createSignal("");
   const [presets, { refetch: rePresets }] = createResource(() => api<Preset[]>("/admin/narration/presets"));
   const [preset, setPreset] = createSignal("whisper");
+  // A pipeline whose only source is subtitles can only read subtitle files (it cannot transcribe the picture or the speech).
+  const subtitleOnly = (g?: PipeGraph) => !!g && g.nodes.some((n) => n.type === "subtitle") && !g.nodes.some((n) => n.type === "whisper" || n.type === "ocr");
+  const [check, setCheck] = createSignal<NarrationInputCheck | null>(null);
+  createEffect(on([lib, preset, presets], () => {
+    setCheck(null);
+    const graph = (presets() ?? []).find((p) => p.id === preset())?.graph;
+    const id = lib();
+    if (!id || !subtitleOnly(graph)) return;
+    api<NarrationInputCheck>("/admin/narration/input-check", { method: "POST", body: JSON.stringify({ library_id: Number(id), preset: preset() }) })
+      .then((r) => id === lib() && setCheck(r))
+      .catch(() => {});
+  }));
   const act = useAction();
   const timer = setInterval(() => refetch(), 4000);
   onCleanup(() => clearInterval(timer));
@@ -787,6 +799,29 @@ function Narration() {
         <label>Pipeline
           <Select value={preset()} onChange={setPreset} options={(presets() ?? []).map((p) => ({ value: p.id, label: p.name }))} />
         </label>
+        <Show when={check() && (check()!.videos_without_input.length > 0 || check()!.subtitles_without_video.length > 0)}>
+          <div class="input-notes">
+            <Show when={check()!.videos_without_input.length}>
+              <div class="input-note skip">
+                <b>{check()!.videos_without_input.length} videos in this folder have no input subtitles — they will be skipped:</b>
+                <ul>
+                  <For each={check()!.videos_without_input.slice(0, 8)}>{(n) => <li title={n}>{n}</li>}</For>
+                  <Show when={check()!.videos_without_input.length > 8}><li class="muted">…and {check()!.videos_without_input.length - 8} more</li></Show>
+                </ul>
+              </div>
+            </Show>
+            <Show when={check()!.subtitles_without_video.length}>
+              <div class="input-note lesson">
+                <b>{check()!.subtitles_without_video.length} subtitle files have no video — these are lessons (audio only):</b>
+                <ul>
+                  <For each={check()!.subtitles_without_video.slice(0, 8)}>{(n) => <li title={n}>{n}</li>}</For>
+                  <Show when={check()!.subtitles_without_video.length > 8}><li class="muted">…and {check()!.subtitles_without_video.length - 8} more</li></Show>
+                </ul>
+                <Show when={cfg().lessons !== "1"}><p class="muted small">To narrate them, turn on “Subtitle files without a video or audio file are lessons” above, then rescan this library.</p></Show>
+              </div>
+            </Show>
+          </div>
+        </Show>
         <button class="btn primary" disabled={!lib()}>Check server and queue</button>
         <act.Note />
         <p class="muted small">Single videos: the “Narration” button on a video's page; a whole library: also on its page.</p>

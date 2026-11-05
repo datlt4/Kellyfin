@@ -164,14 +164,14 @@ impl Scanner {
     }
 }
 
-struct FileInfo {
+pub(crate) struct FileInfo {
     size: i64,
     mtime: i64,
 }
 
 /// Videos, audio files, and (when `lessons_from_subs`) lessons that only have subtitles: one `.srt` per name (English first) that no video or
 /// audio file of the same name goes with. Narration turns such a lesson into an mp3 (narration.rs).
-fn walk(roots: &[String], lessons_from_subs: bool) -> HashMap<String, FileInfo> {
+pub(crate) fn walk(roots: &[String], lessons_from_subs: bool) -> HashMap<String, FileInfo> {
     let mut found = HashMap::new();
     let mut media = std::collections::HashSet::new(); // (folder, stem) of videos and audio files
     let mut subs: Vec<PathBuf> = Vec::new();

@@ -267,6 +267,15 @@ main { padding-bottom: 48px; }
   background: var(--accent);
 }
 
+/* Settings → Narration: what a queue with a subtitle-input pipeline would do (videos without input subs / lessons-only subs). */
+.input-notes { display: flex; flex-direction: column; gap: 6px; }
+.input-note { border-left: 3px solid var(--accent-2); background: var(--surface); border-radius: 8px; padding: 8px 12px; font-size: 12px; }
+.input-note.skip { border-left-color: #d1a13b; }
+.input-note b { font-weight: 600; }
+.input-note ul { margin: 6px 0 0; padding-left: 18px; }
+.input-note li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.input-note p { margin: 6px 0 0; }
+
 /* Library grid */
 .page-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; padding: 24px var(--gutter) 16px; }
 .page-head h1 { font-size: clamp(22px, 3vw, 32px); }

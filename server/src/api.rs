@@ -53,6 +53,7 @@ pub fn router(st: AppState) -> Router {
         .route("/admin/narration/config", put(narration::save_config))
         .route("/admin/narration/token", post(narration::new_token))
         .route("/admin/narration/jobs", post(narration::queue))
+        .route("/admin/narration/input-check", post(narration::input_check))
         .route("/admin/narration/jobs/{id}", delete(narration::delete_job))
         .route("/admin/narration/jobs/{id}/retry", post(narration::retry))
         .route("/admin/narration/jobs/clear", post(narration::clear))
