@@ -124,16 +124,16 @@ select, input {
 .view-btn { background: var(--surface-2); }
 .head-tools { display: flex; align-items: center; gap: 10px; }
 .rows { display: flex; flex-direction: column; padding: 0 var(--gutter); }
-/* Tree view: VS Code-style nested folders, any depth; the videos are rows or grid cards inside. */
+/* Tree view: VS Code-style nested folders, any depth; the videos are grid cards. */
 .tree { padding: 0 var(--gutter); }
 .tree .grid { padding: 0; }
-.tree .rows { padding: 0; }
-.tree-root { margin-bottom: 10px; }
-.tree-folder { margin-bottom: 2px; }
-.tree-children { margin-left: 9px; padding-left: 12px; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
-.tree-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 4px 6px; background: none; border: 0; border-radius: 6px; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.tree-root { margin-bottom: 14px; }
+.tree-folder { margin-bottom: 6px; }
+.tree-children { margin-left: 13px; padding-left: 16px; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+.tree-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 15px 6px 11px; margin-top: 4px; background: none; border: 0; border-radius: 8px; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 .tree-head:hover { background: var(--surface); }
-.tree-head b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-head b { font-weight: 600; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-head .muted.small { font-size: 13px; flex: none; }
 .tree-head .chevron { display: inline-flex; flex: none; color: var(--muted); transition: transform 0.15s; }
 .tree-head .chevron.open { transform: rotate(90deg); }
 .row-item { display: flex; align-items: center; gap: 14px; padding: 8px 0; border-top: 1px solid var(--line); content-visibility: auto; contain-intrinsic-size: auto 84px; }

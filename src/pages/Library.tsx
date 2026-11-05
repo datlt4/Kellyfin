@@ -8,17 +8,18 @@ import { notify } from "../components/Toast";
 
 const PAGE = 120;
 
-type View = "grid" | "list" | "tree" | "tree-grid";
+type View = "grid" | "list" | "tree";
 type TreeNode = { name: string; path: string; folders: TreeNode[]; items: Card[] };
 const savedView = (): View => {
   try {
     const v = localStorage.getItem("libView");
-    return v === "list" || v === "tree" || v === "tree-grid" ? v : "grid";
+    // "tree-grid" was the grid variant of a separate tree list until 2.8.1; both are one tree view now.
+    return v === "list" ? "list" : v === "tree" || v === "tree-grid" ? "tree" : "grid";
   } catch {
     return "grid";
   }
 };
-const isTree = (v: View) => v === "tree" || v === "tree-grid";
+const isTree = (v: View) => v === "tree";
 /** Videos in a branch, the folder itself and everything under it. */
 const countVideos = (n: TreeNode | null): number => (n ? n.items.length + n.folders.reduce((m, f) => m + countVideos(f), 0) : 0);
 
@@ -41,24 +42,22 @@ function ItemRow(props: { item: Card }) {
   );
 }
 
-/** One folder and everything under it; subfolders nest to any depth, the videos follow the chosen tree layout. */
-function TreeFolder(props: { node: TreeNode; view: View; closed: () => Set<string>; onToggle: (path: string) => void }) {
+/** One folder and everything under it; subfolders nest to any depth, the videos are grid cards. */
+function TreeFolder(props: { node: TreeNode; closed: () => Set<string>; onToggle: (path: string) => void }) {
   const isClosed = () => props.closed().has(props.node.path);
   return (
     <section class="tree-folder">
       <button class="tree-head" onClick={() => props.onToggle(props.node.path)} aria-expanded={!isClosed()}>
-        <span class="chevron" classList={{ open: !isClosed() }}><Icon name="right" size={15} /></span>
-        <Icon name="tree" size={18} />
+        <span class="chevron" classList={{ open: !isClosed() }}><Icon name="right" size={17} /></span>
+        <Icon name="tree" size={24} />
         <b>{props.node.name}</b>
         <span class="muted small">{countVideos(props.node)} videos</span>
       </button>
       <Show when={!isClosed()}>
         <div class="tree-children">
-          <For each={props.node.folders}>{(f) => <TreeFolder node={f} view={props.view} closed={props.closed} onToggle={props.onToggle} />}</For>
+          <For each={props.node.folders}>{(f) => <TreeFolder node={f} closed={props.closed} onToggle={props.onToggle} />}</For>
           <Show when={props.node.items.length > 0}>
-            <Show when={props.view === "tree"} fallback={<div class="grid"><For each={props.node.items}>{(it) => <ItemCard item={it} />}</For></div>}>
-              <div class="rows"><For each={props.node.items}>{(it) => <ItemRow item={it} />}</For></div>
-            </Show>
+            <div class="grid"><For each={props.node.items}>{(it) => <ItemCard item={it} />}</For></div>
           </Show>
         </div>
       </Show>
@@ -85,7 +84,7 @@ export default function Library() {
   const [closed, setClosed] = createSignal<Set<string>>(new Set());
   const toggle = (p: string) => setClosed((c) => { const x = new Set(c); x.has(p) ? x.delete(p) : x.add(p); return x; });
   createEffect(on([() => params.id, () => isTree(view())], () => {
-    // Keyed on entering tree mode, not on tree <-> tree-grid, so folding state survives the switch.
+    // Keyed on entering tree mode, not on the grid/list/tree value, so folding state survives leaving and coming back.
     if (!isTree(view()) || !params.id) return;
     const id = params.id;
     if (tree()?.id === id) return; // already loaded for this library
@@ -149,11 +148,11 @@ export default function Library() {
           {/* One button: shows the current view, a click moves to the next one. */}
           <button
             class="icon view-btn"
-            onClick={() => setView(view() === "grid" ? "list" : view() === "list" ? "tree" : view() === "tree" ? "tree-grid" : "grid")}
-            aria-label={`${view() === "tree-grid" ? "tree grid" : view()} view (click for the next one)`}
-            title={view() === "grid" ? "Grid view" : view() === "list" ? "List view" : view() === "tree" ? "Folder tree, list" : "Folder tree, grid"}
+            onClick={() => setView(view() === "grid" ? "list" : view() === "list" ? "tree" : "grid")}
+            aria-label={`${view()} view (click for the next one)`}
+            title={view() === "grid" ? "Grid view" : view() === "list" ? "List view" : "Folder tree"}
           >
-            <Icon name={view()} size={20} />
+            <Icon name={view() === "tree" ? "tree-grid" : view()} size={20} />
           </button>
         </div>
       </div>
@@ -162,13 +161,11 @@ export default function Library() {
           {/* Videos directly in the library root first, then the folder tree. */}
           <Show when={tree()?.root.items.length}>
             <div class="tree-root">
-              <Show when={view() === "tree"} fallback={<div class="grid"><For each={tree()!.root.items}>{(it) => <ItemCard item={it} />}</For></div>}>
-                <div class="rows"><For each={tree()!.root.items}>{(it) => <ItemRow item={it} />}</For></div>
-              </Show>
+              <div class="grid"><For each={tree()!.root.items}>{(it) => <ItemCard item={it} />}</For></div>
             </div>
           </Show>
           <For each={tree()?.root.folders ?? []}>
-            {(f) => <TreeFolder node={f} view={view()} closed={closed} onToggle={toggle} />}
+            {(f) => <TreeFolder node={f} closed={closed} onToggle={toggle} />}
           </For>
         </div>
       </Show>
