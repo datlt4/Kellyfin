@@ -45,12 +45,15 @@ TRANSLATE_WORKERS = int(os.environ.get("TRANSLATE_WORKERS", "6"))
 EDGE_PARALLEL = int(os.environ.get("EDGE_TTS_PARALLEL", "12"))
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL") or "medium"  # baked into the Whisper image: tiny, small, medium
 WHISPER_TIMEOUT = int(os.environ.get("WHISPER_TIMEOUT") or 4 * 3600)  # seconds per video (a CPU takes long)
+EDGE_RETRIES = int(os.environ.get("EDGE_TTS_RETRIES") or 3)  # more rounds over the lines edge-tts failed on, after the first pass
 WORKER_JOBS = int(os.environ.get("WORKER_JOBS") or 3)  # videos worked on at once (see "RES")
 SR = 48000
 
 # One video at a time in each of these (they are heavy), so while one video is read aloud (edge-tts, mostly waiting
 # for the Internet) the next can already be in OCR, Whisper or translation.
 RES = {name: threading.Lock() for name in ("whisper", "ocr", "translate", "vieneu")}
+# edge-tts lines in flight, over every video and voice at once: Microsoft refuses a flood of connections.
+EDGE_SLOTS = threading.Semaphore(EDGE_PARALLEL)
 
 
 def log(*a):
@@ -337,20 +340,38 @@ def tts_edge(cues, voice, duration, dest, tmp, on_progress):
     done, failed = [0], []
     todo = [(i, c[2]) for i, c in enumerate(cues) if speakable(c[2])]
 
-    async def all_cues():
-        sem = asyncio.Semaphore(EDGE_PARALLEL)
+    async def lines(items, width):
+        """Makes these lines (at most `width` at once, and EDGE_SLOTS over the whole worker); returns those that failed."""
+        gate, bad = asyncio.Semaphore(width), []
 
         async def one(i, text):
-            async with sem:
+            async with gate:
+                while not EDGE_SLOTS.acquire(blocking=False):
+                    await asyncio.sleep(0.05)
                 try:
                     await synth(text, os.path.join(voice_dir, f"{i:05}.mp3"))
+                    done[0] += 1
+                    if done[0] % 20 == 0:
+                        on_progress(done[0] / len(todo))
                 except JobError:
-                    failed.append(text)  # one odd line stays silent rather than failing the video
-                done[0] += 1
-                if done[0] % 20 == 0:
-                    on_progress(done[0] / len(todo))
+                    bad.append((i, text))
+                finally:
+                    EDGE_SLOTS.release()
 
-        await asyncio.gather(*(one(i, t) for i, t in todo))
+        await asyncio.gather(*(one(i, t) for i, t in items))
+        return sorted(bad)
+
+    async def all_cues():
+        left = await lines(todo, EDGE_PARALLEL)
+        # Lines that failed (a throttled or dropped connection) are tried again, gently: fewer at a time, after a pause.
+        for rnd in range(1, EDGE_RETRIES + 1):
+            if not left:
+                break
+            log(f"edge-tts: {len(left)} of {len(todo)} lines failed, again in {10 * 3 ** (rnd - 1)} s (round {rnd}/{EDGE_RETRIES})")
+            await asyncio.sleep(10 * 3 ** (rnd - 1))
+            on_progress(done[0] / len(todo))
+            left = await lines(left, 4)
+        failed.extend(t for _, t in left)  # one odd line stays silent rather than failing the video
 
     asyncio.run(all_cues())
     if len(failed) > max(3, len(todo) // 10):
@@ -636,7 +657,7 @@ def process(job):
     tmp = tempfile.mkdtemp(prefix=f"narration-{jid}-", dir=WORK)
     # Progress bar: 1 subtitles 0-30 %, 2 translation 30-50 %, 3 voices 50-90 % (4, the mux, is Kellyfin's).
     span = {1: (0.0, 0.3), 2: (0.3, 0.2), 3: (0.5, 0.4)}
-    reused = set()  # languages whose subtitles the video's folder already had: no OCR / Whisper / translation for them
+    reused = set()  # languages read from the video's own subtitles (a "subtitle" node asked for them)
     count = {k: sum(1 for n in nodes.values() if STAGE.get(n["type"]) == k) for k in span}
     done = {k: 0 for k in span}
 
@@ -678,8 +699,8 @@ def process(job):
     uploaded = set()
 
     def keep(lang, cues):
-        """Subtitles made here go next to the video (Kellyfin never overwrites the video's own)."""
-        if lang not in subs and lang not in uploaded:
+        """Subtitles made here go next to the video, replacing the ones already there."""
+        if lang not in uploaded:
             path = os.path.join(tmp, f"{lang}.srt")
             write_srt(cues, path)
             kf_upload(jid, f"{lang}.srt", path)
@@ -706,9 +727,6 @@ def process(job):
                 raise JobError(f"the video has no {lang} subtitles")
             step(1, f"Using the video's {lang} subtitles")
             texts[nid] = (lang, existing(lang))
-        elif kind in ("whisper", "ocr") and lang != "auto" and lang in subs:
-            step(1, f"Using the video's {lang} subtitles")
-            texts[nid] = (lang, existing(lang))
         elif kind == "whisper":
             audio = fetch("audio")
             step(1, f"Transcribing {'the spoken language' if lang == 'auto' else lang} (Whisper)")
@@ -732,20 +750,16 @@ def process(job):
             texts[nid] = (lang, cues)
             keep(lang, cues)
         elif kind == "translate":
-            if lang in subs:  # the video has it: its input is not needed
-                step(2, f"Using the video's {lang} subtitles")
-                texts[nid] = (lang, existing(lang))
+            src, cues = produce(feeds[nid][0])
+            if lang == src:
+                texts[nid] = (lang, cues)
             else:
-                src, cues = produce(feeds[nid][0])
-                if lang == src:
-                    texts[nid] = (lang, cues)
-                else:
-                    label = f"Translating {src} → {lang} (Argos)"
+                label = f"Translating {src} → {lang} (Argos)"
+                step(2, label)
+                with exclusive("translate", 2, "Waiting for translation (another video is being translated)"):
                     step(2, label)
-                    with exclusive("translate", 2, "Waiting for translation (another video is being translated)"):
-                        step(2, label)
-                        texts[nid] = (lang, translate(base, cues, src, lang, lambda f, label=label: step(2, label, f)))
-                    keep(lang, texts[nid][1])
+                    texts[nid] = (lang, translate(base, cues, src, lang, lambda f, label=label: step(2, label, f)))
+                keep(lang, texts[nid][1])
         if kind in STAGE:
             done[STAGE[kind]] += 1
         return texts[nid]

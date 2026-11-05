@@ -86,7 +86,7 @@ export default function Library() {
     if (preset === null) return;
     await checkNarration(preset.graph);
     const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: lib()!.id, preset: preset.id }) });
-    notify(n ? `${n} videos queued. Progress: Settings → Narration.` : "Nothing new to queue: every video is already in the queue or done (delete a job to redo it).");
+    notify(n ? `${n} videos queued. Progress: Settings → Narration.` : "Nothing queued: every video of this library is already waiting, running or paused.");
   }
 
   return (

@@ -11,8 +11,9 @@ Whisper" and "Default · OCR"; duplicate one to make your own), in four stages s
 1. **Subtitles**: [Whisper](https://github.com/SYSTRAN/faster-whisper) on the speech (language set, or detected by
    Argos; lines repeated 60 % alike are merged), **OCR** of subtitles burned into the picture (EasyOCR on the bottom
    part of the frame, twice a second, read again only when that band changes), or the video's own subtitles;
-2. **Translation** with Argos / LibreTranslate into the languages the graph asks for (subtitles the video already has
-   in a language are reused);
+2. **Translation** with Argos / LibreTranslate into the languages the graph asks for. A job always redoes every
+   step: subtitles, translation and voices of an earlier run are replaced (the `<video>.<lang>.srt` files and the
+   narration tracks), only a **subtitle** node reads the video's own subtitles;
 3. **Voice**: VieNeu-TTS reads Vietnamese, edge-tts any language (edge-tts is a Microsoft service: needs Internet);
 4. **Mux**, on the Kellyfin server: the voice over the original sound, which ducks while the voice speaks. The worker
    hands the voice over and takes the next video meanwhile.
@@ -51,7 +52,7 @@ run on its own (`docker build -t kellyfin-narrator .`) against the services else
 
 Other settings (environment): `WORKER_NAME` (unique per worker: a worker asking for work gets back the jobs
 still marked as its own, i.e. cut off by a restart), `POLL_SECONDS` (15), `WORK_DIR`, `TRANSLATE_WORKERS` (6),
-`EDGE_TTS_PARALLEL` (12, lines of one voice read at once), `WORKER_JOBS` (3).
+`EDGE_TTS_PARALLEL` (12, edge-tts lines in flight over every video and voice together), `EDGE_TTS_RETRIES` (3, rounds over the lines edge-tts failed on, after 10, 30, 90 s), `WORKER_JOBS` (3).
 
 ## CPU only (no NVIDIA GPU)
 

@@ -233,15 +233,16 @@ async fn embed(st: &AppState, id: i64) -> anyhow::Result<()> {
         let _ = tokio::fs::remove_dir_all(st.cfg.data.join("subs").join(item.to_string())).await;
         crate::scan::refresh_item(&st.db, item, &path).await?;
     }
-    // Subtitles next to the video, where every player finds them; an existing file is left alone.
+    // Subtitles next to the video, where every player finds them; a file already there is replaced (a job always redoes them).
     if let Ok(mut rd) = tokio::fs::read_dir(&d).await {
         while let Some(e) = rd.next_entry().await? {
             let name = e.file_name().to_string_lossy().into_owned();
             if let Some(lang) = name.strip_suffix(".srt").filter(|l| SUB_LANGS.contains(l)) {
                 let target = folder.join(format!("{stem}.{lang}.srt"));
-                if !target.exists() {
-                    tokio::fs::copy(e.path(), &target).await?;
-                }
+                // Copy beside it, then rename over it: replacing needs the folder to be writable, not the old file.
+                let tmp = folder.join(format!(".{stem}.{lang}.srt.new"));
+                tokio::fs::copy(e.path(), &tmp).await?;
+                tokio::fs::rename(&tmp, &target).await?;
             }
         }
     }
@@ -740,7 +741,8 @@ async fn preset(st: &AppState, id: &str) -> ApiResult<(String, pipeline::Graph)>
     Ok((name, serde_json::from_str(&graph).map_err(anyhow::Error::from)?))
 }
 
-/// Queues videos (or a whole library) with a pipeline; failed jobs are retried, finished ones kept (delete them to redo).
+/// Queues videos (or a whole library) with a pipeline. A failed or finished job is queued again and redone from the
+/// start (subtitles, translation, voices); one that is waiting, running or paused is left alone.
 pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) -> ApiResult<Json<u64>> {
     let (name, graph) = preset(&st, q.preset.as_deref().unwrap_or("whisper")).await?;
     let summary = pipeline::validate(&graph, SUB_LANGS).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
@@ -756,8 +758,8 @@ pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) 
             "INSERT INTO narration_jobs (item_id, source, langs, preset, pipeline, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
              ON CONFLICT (item_id) DO UPDATE SET status = 'queued', source = excluded.source, langs = excluded.langs,
                preset = excluded.preset, pipeline = excluded.pipeline, stage = 0, step = NULL, progress = 0, error = NULL,
-               updated_at = excluded.updated_at
-             WHERE narration_jobs.status = 'failed'",
+               priority = 0, updated_at = excluded.updated_at
+             WHERE narration_jobs.status IN ('failed', 'done')",
         )
         .bind(id)
         .bind(&summary.source)
