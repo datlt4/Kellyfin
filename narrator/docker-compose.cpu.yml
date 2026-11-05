@@ -5,9 +5,8 @@
 #   docker compose -f docker-compose.cpu.yml up -d
 #
 # Use this file or docker-compose.yml, not both: they share container names and ports. No NVIDIA Container Toolkit
-# needed. Whisper and EasyOCR models are inside the images; VieNeu downloads its model (v3 Turbo, ONNX on the CPU)
-# from Hugging Face on its first start, so that first start needs the Internet and a few minutes. Needs about
-# 8 GB of free memory, and every core you can give it.
+# needed; Whisper and EasyOCR models are inside the images. No VieNeu here: queue the "edge-tts only" pipelines
+# (Vietnamese is read by edge-tts too). Needs about 6 GB of free memory, and every core you can give it.
 
 name: film-sub
 
@@ -39,41 +38,18 @@ services:
       - EASYOCR_LOAD_LANGS=vi
       - EASYOCR_USE_GPU=0
 
-  # One VieNeu instance on the host network at port 7861 (two would fight over the same cores).
-  vieneu1:
-    image: hienanh/vieneu:latest
-    container_name: vieneu-tts-gpu1
-    restart: unless-stopped
-    network_mode: host
-    environment:
-      - VIENEU_AUTOLOAD=1
-      - VIENEU_DEVICE=CPU
-      - VIENEU_CONCURRENCY=1
-      - VIENEU_INSTANCE=1
-      - GRADIO_SERVER_NAME=0.0.0.0
-      - GRADIO_SERVER_PORT=7861
-      - GRADIO_SHARE=0
-      - HF_HOME=/home/app/.cache/huggingface
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - vieneu_model:/home/app/.cache/huggingface
-    shm_size: 2gb
-    stop_grace_period: 30s
-
   nginx:
     image: nginx:1.27-alpine
     container_name: fs-nginx
     restart: unless-stopped
     ports:
       - "8080:80"
-    environment:
-      - VIENEU_SINGLE=1
     volumes:
       - ./nginx:/etc/nginx-extra:ro
     entrypoint: ["/etc/nginx-extra/entrypoint.sh"]
     extra_hosts:
       - "host-gateway:host-gateway"
-    depends_on: [argos, whisper, easyocr, vieneu1]
+    depends_on: [argos, whisper, easyocr]
 
   kellyfin-narrator:
     image: hienanh/kellyfin-narrator:latest
@@ -88,6 +64,3 @@ services:
       - WHISPER_MODEL=${WHISPER_MODEL:-medium}
       - WORKER_JOBS=${WORKER_JOBS:-3}
     depends_on: [nginx]
-
-volumes:
-  vieneu_model:

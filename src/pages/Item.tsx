@@ -62,8 +62,8 @@ export default function Item() {
   async function narrate() {
     const preset = await pickPreset();
     if (preset === null) return;
-    await checkNarration();
-    await api("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [item()!.id], preset }) });
+    await checkNarration(preset.graph);
+    await api("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [item()!.id], preset: preset.id }) });
     alert("Queued. Progress: Settings → Narration.");
   }
 

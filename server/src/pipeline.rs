@@ -1,5 +1,5 @@
 //! Narration pipelines: node graphs of how a video gets its subtitles and voices (run by the narrator worker, muxed
-//! by narration.rs). Two built-in presets — "Default · Whisper" and "Default · OCR" — plus presets the admin saves;
+//! by narration.rs). Built-in presets — "Default · Whisper" and "Default · OCR", and their edge-tts-only variants — plus presets the admin saves;
 //! every job keeps a copy of the graph it was queued with.
 //!
 //! Nodes: sources `whisper` (lang or "auto"), `ocr` (burned-in subtitles; lang, crop = bottom share of the frame),
@@ -60,32 +60,44 @@ fn edges(e: &[(&str, &str)]) -> Vec<(String, String)> {
     e.iter().map(|(a, b)| ((*a).into(), (*b).into())).collect()
 }
 
-/// (id, name, graph) of the built-in presets.
-pub fn builtins() -> Vec<(&'static str, &'static str, Graph)> {
-    let whisper = Graph {
+fn whisper_graph(vi: &str) -> Graph {
+    Graph {
         nodes: vec![
             node("src", "whisper", "auto", 40.0, 150.0),
             node("en", "translate", "en", 320.0, 40.0),
             node("vi", "translate", "vi", 320.0, 150.0),
             node("zh", "translate", "zh", 320.0, 260.0),
-            voice("vvi", "vieneu", 600.0, 150.0),
+            voice("vvi", vi, 600.0, 150.0),
             voice("vzh", "edge", 600.0, 260.0),
             node("mux", "mux", "", 880.0, 205.0),
         ],
         edges: edges(&[("src", "en"), ("src", "vi"), ("src", "zh"), ("vi", "vvi"), ("zh", "vzh"), ("vvi", "mux"), ("vzh", "mux")]),
-    };
-    let ocr = Graph {
+    }
+}
+
+fn ocr_graph(vi: &str) -> Graph {
+    Graph {
         nodes: vec![
             Node { crop: 0.35, ..node("src", "ocr", "vi", 40.0, 150.0) },
             node("en", "translate", "en", 320.0, 40.0),
             node("zh", "translate", "zh", 320.0, 260.0),
-            voice("vvi", "vieneu", 600.0, 150.0),
+            voice("vvi", vi, 600.0, 150.0),
             voice("vzh", "edge", 600.0, 260.0),
             node("mux", "mux", "", 880.0, 205.0),
         ],
         edges: edges(&[("src", "en"), ("src", "zh"), ("src", "vvi"), ("zh", "vzh"), ("vvi", "mux"), ("vzh", "mux")]),
-    };
-    vec![("whisper", "Default · Whisper", whisper), ("ocr", "Default · OCR (burned-in subtitles)", ocr)]
+    }
+}
+
+/// (id, name, graph) of the built-in presets; the "edge-tts only" ones read Vietnamese with edge-tts too, for a
+/// machine without VieNeu (a CPU-only one).
+pub fn builtins() -> Vec<(&'static str, &'static str, Graph)> {
+    vec![
+        ("whisper", "Default · Whisper", whisper_graph("vieneu")),
+        ("ocr", "Default · OCR (burned-in subtitles)", ocr_graph("vieneu")),
+        ("whisper-edge", "Whisper · edge-tts only (no VieNeu)", whisper_graph("edge")),
+        ("ocr-edge", "OCR · edge-tts only (no VieNeu)", ocr_graph("edge")),
+    ]
 }
 
 /// What a graph does, for the queue: (spoken/source description, voice languages).

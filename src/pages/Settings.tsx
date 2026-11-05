@@ -711,7 +711,7 @@ function Narration() {
   const queue = (e: Event) => {
     e.preventDefault();
     act.run(async () => {
-      await checkNarration();
+      await checkNarration((presets() ?? []).find((p) => p.id === preset())?.graph);
       const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: Number(lib()), preset: preset() }) });
       refetch();
       return n;

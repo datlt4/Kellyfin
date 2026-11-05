@@ -339,23 +339,39 @@ export function fmtRes(h: number | null, w: number | null) {
   return p >= 2000 ? "4K" : `${p}p`;
 }
 
-/** What the narration workers report about the film-sub services; throws unless one of them has all of them up. */
-export async function checkNarration(): Promise<NarrationOverview> {
+/** The film-sub services a pipeline uses, by the start of their name in the worker's report. */
+function needed(g: PipeGraph): string[] {
+  const out = new Set<string>();
+  for (const n of g.nodes) {
+    if (n.type === "whisper") out.add("Whisper");
+    else if (n.type === "ocr") out.add("EasyOCR");
+    else if (n.type === "translate") out.add("Argos");
+    else if (n.type === "voice") out.add(n.engine === "vieneu" ? "VieNeu" : "edge-tts");
+  }
+  return [...out];
+}
+
+/** A worker is online and (with the pipeline) the services that pipeline uses answer: a machine without VieNeu can
+ *  still queue pipelines that read with edge-tts. Without a pipeline (a retry) only the worker has to be online. */
+export async function checkNarration(graph?: PipeGraph): Promise<NarrationOverview> {
   const ov = await api<NarrationOverview>("/admin/narration");
   if (!ov.workers.length) throw new Error("No narration worker is online (start kellyfin-narrator in narrator/film-sub).");
-  if (!ov.workers.some((w) => w.checks.length && w.checks.every((c) => c.ok))) {
-    const bad = ov.workers[0].checks.filter((c) => !c.ok);
+  if (!graph) return ov;
+  const need = needed(graph);
+  const relevant = (w: NarrationOverview["workers"][number]) => w.checks.filter((c) => need.some((n) => c.name.startsWith(n)));
+  if (!ov.workers.some((w) => w.checks.length && relevant(w).every((c) => c.ok))) {
+    const bad = relevant(ov.workers[0]).filter((c) => !c.ok);
     throw new Error(`film-sub services not ready: ${bad.map((c) => `${c.name}: ${c.detail}`).join("; ") || "no report yet, wait a minute"}`);
   }
   return ov;
 }
 
 /** Asks which pipeline to queue with (built-in and saved presets); null when cancelled. */
-export async function pickPreset(): Promise<string | null> {
+export async function pickPreset(): Promise<Preset | null> {
   const list = await api<Preset[]>("/admin/narration/presets");
   const n = prompt(`Pipeline:\n${list.map((p, i) => `${i + 1}. ${p.name}`).join("\n")}`, "1");
   if (n === null) return null;
   const p = list[Number(n) - 1];
   if (!p) throw new Error("No such pipeline");
-  return p.id;
+  return p;
 }

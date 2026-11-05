@@ -59,16 +59,18 @@ still marked as its own, i.e. cut off by a restart), `POLL_SECONDS` (15), `WORK_
 docker compose -f docker-compose.cpu.yml up -d     # instead of docker-compose.yml, not next to it
 ```
 
-Same services, same worker, no GPU: Whisper (int8) and EasyOCR run on the CPU, VieNeu is one instance on the CPU
-(its v3 Turbo model runs through ONNX; it is downloaded from Hugging Face on the first start, which takes a few
-minutes and needs the Internet, then kept in the `vieneu_model` volume). About 8 GB of free memory.
+Same services and worker, no GPU and no VieNeu: Whisper (int8) and EasyOCR run on the CPU, Vietnamese is read by
+edge-tts like the other languages. Queue the **"Whisper · edge-tts only"** or **"OCR · edge-tts only"** pipelines (the
+default ones read Vietnamese with VieNeu). Kellyfin only asks for the services a pipeline uses, so a missing VieNeu does
+not stop you from queueing. About 6 GB of free memory.
 Whisper's model is `WHISPER_MODEL` in `.env`: `medium` (default) or `small` (about 2.5 times faster, a little less exact).
 
 What it costs, measured on a 12-thread desktop CPU with short samples (real films will differ): Whisper `medium`
-0.25 × the length of the speech (`small` 0.09 ×), so about 11 min for a 45-minute episode; VieNeu 0.45 × the length of
-the voice it makes (8 lines, 41 s of voice in 18 s); EasyOCR about 1 s for each frame it reads, and it reads only the
-frames where the subtitle band changed (the 40 s test video took 32 s). Translation (Argos) and the edge-tts Chinese
-voice are the same as with a GPU. Video stays untouched except for the added tracks, as always.
+0.25 × the length of the speech (`small` 0.09 ×), so about 11 min for a 45-minute episode; EasyOCR about 1 s for each
+frame it reads, and it reads only the frames where the subtitle band changed (the 40 s test video took 32 s).
+Translation (Argos) and edge-tts are the same as with a GPU. VieNeu also runs on the CPU (8 lines, 41 s of voice in
+18 s, 2.2 GiB) if you want it: add the `vieneu1` service of `docker-compose.yml` with `VIENEU_DEVICE=CPU`, no GPU
+reservation and a volume on `/home/app/.cache/huggingface` (it downloads its model on the first start).
 
 ## Languages
 

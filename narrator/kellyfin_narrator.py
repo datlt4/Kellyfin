@@ -839,6 +839,7 @@ def health():
     voices = []
 
     def vieneu_ok():
+        requests.get(f"{FILMSUB}/tts/", timeout=8).raise_for_status()  # not installed: answer in seconds, not minutes
         voices.extend(VieNeu(FILMSUB).voices())
         return bool(voices), f"{len(voices)} voices" if voices else "no model loaded"
 

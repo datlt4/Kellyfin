@@ -83,8 +83,8 @@ export default function Library() {
   async function narrate() {
     const preset = await pickPreset();
     if (preset === null) return;
-    await checkNarration();
-    const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: lib()!.id, preset }) });
+    await checkNarration(preset.graph);
+    const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: lib()!.id, preset: preset.id }) });
     alert(`${n} videos queued. Progress: Settings → Narration.`);
   }
 
