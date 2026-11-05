@@ -64,8 +64,8 @@ export default function Item() {
     const preset = await pickPreset();
     if (preset === null) return;
     await checkNarration(preset.graph);
-    await api("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [item()!.id], preset: preset.id }) });
-    notify("Queued. Progress: Settings → Narration.");
+    const r = await api<{ queued: number; skipped: number }>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ item_ids: [item()!.id], preset: preset.id }) });
+    notify(r.queued ? "Queued. Progress: Settings → Narration." : "Not queued: this video has no subtitles for this pipeline.");
   }
 
   async function autoImage() {

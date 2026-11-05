@@ -14,11 +14,11 @@ const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** Runs an action and shows its error (or a short confirmation) next to the button. */
 function useAction() {
   const [note, setNote] = createSignal<{ ok: boolean; text: string } | null>(null);
-  const run = async (f: () => Promise<unknown>, done?: string) => {
+  const run = async (f: () => Promise<unknown>, done?: string | (() => string)) => {
     setNote(null);
     try {
       await f();
-      if (done) setNote({ ok: true, text: done });
+      if (done) setNote({ ok: true, text: typeof done === "function" ? done() : done });
       return true;
     } catch (e) {
       setNote({ ok: false, text: msg(e) });
@@ -711,12 +711,13 @@ function Narration() {
   const voices = () => [...new Set((ov()?.workers ?? []).flatMap((w) => w.voices))];
   const queue = (e: Event) => {
     e.preventDefault();
+    let msg = "Queued";
     act.run(async () => {
       await checkNarration((presets() ?? []).find((p) => p.id === preset())?.graph);
-      const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: Number(lib()), preset: preset() }) });
+      const r = await api<{ queued: number; skipped: number }>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: Number(lib()), preset: preset() }) });
+      msg = r.skipped ? `Queued ${r.queued}, skipped ${r.skipped} (no input subtitles)` : `Queued ${r.queued}`;
       refetch();
-      return n;
-    }, "Queued");
+    }, () => msg);
   };
   const snippet = () => `KELLYFIN_URL=${location.origin}\nKELLYFIN_NARRATOR_TOKEN=${ov()?.token ?? "…"}`;
   return (

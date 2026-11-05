@@ -451,6 +451,25 @@ async fn job_item(st: &AppState, id: i64) -> ApiResult<(i64, String, Vec<Value>)
     Ok((item, path, streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()))
 }
 
+/// Subtitles an item has, language code -> key: the external files beside the video and the embedded text tracks — the
+/// same set a `subtitle` node can read (the claim hands this to the worker).
+fn sub_map(item_path: &str, tracks: Vec<crate::stream::SubTrack>) -> HashMap<String, String> {
+    let mut subs = HashMap::new();
+    for t in tracks.into_iter().filter(|t| t.supported) {
+        if let Some(code) = t.lang.as_deref().and_then(lang_code) {
+            subs.entry(code.to_owned()).or_insert(t.key);
+        }
+    }
+    if util::is_srt(item_path) {
+        // The lesson is the subtitle file itself ("<name>.<lang>.srt").
+        let stem = util::file_stem(item_path);
+        if let Some(code) = util::split_lang(&stem).1.and_then(lang_code) {
+            subs.insert(code.to_owned(), "self".to_owned());
+        }
+    }
+    subs
+}
+
 /// A lesson narrated into an mp3 of its own: a subtitle file with no video yet, or an audio file made that way.
 fn audio_only(path: &str) -> bool {
     util::is_srt(path) || util::is_audio(FsPath::new(path))
@@ -545,20 +564,8 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
     let tracks = tokio::task::spawn_blocking(move || crate::stream::subtitle_tracks(&path, &streams))
         .await
         .map_err(anyhow::Error::from)?;
-    let mut subs = HashMap::new();
-    for t in tracks.into_iter().filter(|t| t.supported) {
-        if let Some(code) = t.lang.as_deref().and_then(lang_code) {
-            subs.entry(code.to_owned()).or_insert(t.key);
-        }
-    }
+    let subs = sub_map(&item_path, tracks);
     let audio_only = audio_only(&item_path);
-    if util::is_srt(&item_path) {
-        // The lesson is the subtitle file itself ("<name>.<lang>.srt").
-        let stem = util::file_stem(&item_path);
-        if let Some(code) = util::split_lang(&stem).1.and_then(lang_code) {
-            subs.insert(code.to_owned(), "self".to_owned());
-        }
-    }
     tracing::info!("narration job {job_id} (item {item_id}) -> {worker}");
     let pipeline = match graph.and_then(|g| serde_json::from_str(&g).ok()) {
         Some(g) => g,
@@ -822,9 +829,18 @@ fn pipeline_has_media_source(g: &pipeline::Graph) -> bool {
     g.nodes.iter().any(|n| matches!(n.kind.as_str(), "whisper" | "ocr"))
 }
 
+#[derive(Serialize)]
+pub struct QueueResult {
+    queued: u64,
+    /// Videos (or lessons) the pipeline has no input subtitles for; they were skipped, not queued.
+    skipped: u64,
+}
+
 /// Queues videos (or a whole library) with a pipeline. A failed or finished job is queued again and redone from the
-/// start (subtitles, translation, voices); one that is waiting, running or paused is left alone.
-pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) -> ApiResult<Json<u64>> {
+/// start (subtitles, translation, voices); one that is waiting, running or paused is left alone. A pipeline whose only
+/// source is a subtitle file skips (and counts in `skipped`) the items that have none of the subtitle languages it asks
+/// for — found the same way the claim finds them for the worker (external files beside the video, embedded text tracks).
+pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) -> ApiResult<Json<QueueResult>> {
     let (name, graph) = preset(&st, q.preset.as_deref().unwrap_or("whisper")).await?;
     let summary = pipeline::validate(&graph, SUB_LANGS).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let graph_value = graph.clone();
@@ -837,10 +853,28 @@ pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) 
     let mut added = 0;
     // A lesson without a video has nothing to transcribe or read off the picture: only subtitle sources fit.
     let only_subs = !pipeline_has_media_source(&graph_value);
+    let input_langs: Vec<String> = graph_value.nodes.iter().filter(|n| n.kind == "subtitle").map(|n| n.lang.clone()).collect();
+    let must_have_input = !input_langs.is_empty() && only_subs;
+    let mut skipped = 0u64;
     for id in ids {
-        let path: Option<String> = sqlx::query_scalar("SELECT path FROM items WHERE id = ?").bind(id).fetch_optional(&st.db).await?;
-        if path.is_some_and(|p| audio_only(&p)) && !only_subs {
+        let row: Option<(String, Option<String>)> = sqlx::query_as("SELECT path, streams FROM items WHERE id = ?").bind(id).fetch_optional(&st.db).await?;
+        let Some((path, streams)) = row else { continue };
+        if audio_only(&path) && !only_subs {
             continue;
+        }
+        if must_have_input {
+            let streams: Value = streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+            let p = path.clone();
+            let tracks = tokio::task::spawn_blocking(move || crate::stream::subtitle_tracks(&p, &streams)).await.unwrap_or_default();
+            let subs = sub_map(&path, tracks);
+            let missing = input_langs.iter().any(|l| match lang_code(l) {
+                Some(c) => !subs.contains_key(c),
+                None => true,
+            });
+            if missing {
+                skipped += 1;
+                continue;
+            }
         }
         added += sqlx::query(
             "INSERT INTO narration_jobs (item_id, source, langs, preset, pipeline, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
@@ -859,7 +893,7 @@ pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) 
         .await?
         .rows_affected();
     }
-    Ok(Json(added))
+    Ok(Json(QueueResult { queued: added, skipped }))
 }
 
 // ---------- Presets ----------
@@ -1040,5 +1074,27 @@ mod tests {
         let g = mux_graph(None, &[1, 2]);
         assert!(g.starts_with("[1:a:0]aformat") && g.ends_with("apad[n2]") && !g.contains("[0:"));
         assert_eq!(track_title("Chinese"), "Narration (Chinese)");
+    }
+
+    #[test]
+    fn sub_map_finds_external_and_lesson_self() {
+        let d = std::env::temp_dir().join(format!("kellyfin-submap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for f in ["001 A.mp4", "001 A.en.srt", "002 B.en.srt", "003 C.mp4"] {
+            std::fs::write(d.join(f), "x").unwrap();
+        }
+        let null = serde_json::Value::Null;
+        let path = |n| d.join(n).to_string_lossy().into_owned();
+        // A video with the .en.srt beside it.
+        let t = crate::stream::subtitle_tracks(&path("001 A.mp4"), &null);
+        assert_eq!(sub_map(&path("001 A.mp4"), t).get("en").map(String::as_str), Some("x0"));
+        // A lesson without a video reads its own file as "self".
+        let t = crate::stream::subtitle_tracks(&path("002 B.en.srt"), &null);
+        assert_eq!(sub_map(&path("002 B.en.srt"), t).get("en").map(String::as_str), Some("self"));
+        // A video without subtitles has nothing.
+        let t = crate::stream::subtitle_tracks(&path("003 C.mp4"), &null);
+        assert!(sub_map(&path("003 C.mp4"), t).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

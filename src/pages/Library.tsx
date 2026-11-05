@@ -128,8 +128,14 @@ export default function Library() {
     const preset = await pickPreset();
     if (preset === null) return;
     await checkNarration(preset.graph);
-    const n = await api<number>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: lib()!.id, preset: preset.id }) });
-    notify(n ? `${n} videos queued. Progress: Settings → Narration.` : "Nothing queued: every video of this library is already waiting, running or paused.");
+    const r = await api<{ queued: number; skipped: number }>("/admin/narration/jobs", { method: "POST", body: JSON.stringify({ library_id: lib()!.id, preset: preset.id }) });
+    notify(
+      r.queued
+        ? `${r.queued} videos queued${r.skipped ? `, ${r.skipped} without input subtitles skipped` : ""}. Progress: Settings → Narration.`
+        : r.skipped
+          ? `Nothing queued: ${r.skipped} videos have no input subtitles for this pipeline.`
+          : "Nothing queued: every video of this library is already waiting, running or paused.",
+    );
   }
 
   return (
