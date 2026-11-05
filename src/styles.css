@@ -124,6 +124,9 @@ select, input {
 .view-btn { background: var(--surface-2); }
 .head-tools { display: flex; align-items: center; gap: 10px; }
 .rows { display: flex; flex-direction: column; padding: 0 var(--gutter); }
+.folder-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 14px var(--gutter) 8px; background: none; border: 0; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.folder-head b { font-weight: 600; }
+.tree section { margin-bottom: 8px; }
 .row-item { display: flex; align-items: center; gap: 14px; padding: 8px 0; border-top: 1px solid var(--line); content-visibility: auto; contain-intrinsic-size: auto 84px; }
 .row-item .thumb { width: 120px; flex: none; }
 .row-item .row-text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }

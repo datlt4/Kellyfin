@@ -8,10 +8,12 @@ import { notify } from "../components/Toast";
 
 const PAGE = 120;
 
-type View = "grid" | "list";
+type View = "grid" | "list" | "tree";
+type Folder = { name: string; items: Card[] };
 const savedView = (): View => {
   try {
-    return localStorage.getItem("libView") === "list" ? "list" : "grid";
+    const v = localStorage.getItem("libView");
+    return v === "list" || v === "tree" ? v : "grid";
   } catch {
     return "grid";
   }
@@ -51,7 +53,19 @@ export default function Library() {
   const [total, setTotal] = createSignal(-1);
   let gen = 0;
 
+  const [folders, setFolders] = createSignal<Folder[]>([]);
+  const [closed, setClosed] = createSignal<Set<string>>(new Set());
+  const toggle = (n: string) => setClosed((c) => { const x = new Set(c); x.has(n) ? x.delete(n) : x.add(n); return x; });
+  createEffect(on([() => params.id, view], () => {
+    if (view() !== "tree") return;
+    const id = params.id;
+    setFolders([]);
+    setClosed(new Set<string>());
+    api<Folder[]>(`/libraries/${id}/tree`).then((f) => id === params.id && setFolders(f));
+  }));
+
   const load = async () => {
+    if (view() === "tree") return;
     const g = gen;
     if (total() >= 0 && items().length >= total()) return;
     const r = await api<{ total: number; items: Card[] }>(
@@ -61,7 +75,7 @@ export default function Library() {
     setTotal(r.total);
     setItems([...items(), ...r.items]);
   };
-  createEffect(on([() => params.id, sort], () => {
+  createEffect(on([() => params.id, sort, () => view() === "tree"], () => {
     gen++;
     setItems([]);
     setTotal(-1);
@@ -94,29 +108,47 @@ export default function Library() {
       <div class="page-head">
         <div>
           <h1>{lib()?.name}</h1>
-          <span class="muted"><Show when={total() >= 0}>{total()} videos</Show></span>
+          <span class="muted"><Show when={view() === "tree" ? folders().length : total() >= 0}>{view() === "tree" ? folders().reduce((n, f) => n + f.items.length, 0) : total()} videos</Show></span>
         </div>
         <div class="head-tools">
           <Show when={user()?.is_admin && lib()}>
             <button class="btn small" onClick={() => narrate().catch((e) => notify(e.message, false))} title="Vietnamese and Chinese voice-over for every video">Narration</button>
           </Show>
-          <Select value={sort()} onChange={(v) => setSort(v as "title" | "added")}
-            options={[{ value: "title", label: "A – Z" }, { value: "added", label: "Recently added" }]} />
+          <Show when={view() !== "tree"}><Select value={sort()} onChange={(v) => setSort(v as "title" | "added")}
+            options={[{ value: "title", label: "A – Z" }, { value: "added", label: "Recently added" }]} /></Show>
           {/* One button: shows the current view, a click moves to the next one. */}
           <button
             class="icon view-btn"
-            onClick={() => setView(view() === "grid" ? "list" : "grid")}
-            aria-label={view() === "grid" ? "Grid view (switch to list)" : "List view (switch to grid)"}
-            title={view() === "grid" ? "Grid view" : "List view"}
+            onClick={() => setView(view() === "grid" ? "list" : view() === "list" ? "tree" : "grid")}
+            aria-label={`${view()} view (click for the next one)`}
+            title={view() === "grid" ? "Grid view" : view() === "list" ? "List view" : "Folder tree view"}
           >
             <Icon name={view()} size={20} />
           </button>
         </div>
       </div>
-      <Show
-        when={view() === "list"}
-        fallback={<div class="grid"><For each={items()}>{(it) => <ItemCard item={it} />}</For></div>}
-      >
+      <Show when={view() === "tree"}>
+        <div class="tree">
+          <For each={folders()}>
+            {(f) => (
+              <section>
+                <button class="folder-head" onClick={() => toggle(f.name)} aria-expanded={!closed().has(f.name)}>
+                  <Icon name="tree" size={18} />
+                  <b>{f.name || "(this folder)"}</b>
+                  <span class="muted small">{f.items.length} videos</span>
+                </button>
+                <Show when={!closed().has(f.name)}>
+                  <div class="rows"><For each={f.items}>{(it) => <ItemRow item={it} />}</For></div>
+                </Show>
+              </section>
+            )}
+          </For>
+        </div>
+      </Show>
+      <Show when={view() === "grid"}>
+        <div class="grid"><For each={items()}>{(it) => <ItemCard item={it} />}</For></div>
+      </Show>
+      <Show when={view() === "list"}>
         <div class="rows"><For each={items()}>{(it) => <ItemRow item={it} />}</For></div>
       </Show>
       <div ref={sentinel} class="sentinel" />

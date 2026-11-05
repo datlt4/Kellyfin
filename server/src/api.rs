@@ -36,6 +36,7 @@ pub fn router(st: AppState) -> Router {
         .route("/libraries", get(libraries))
         .route("/libraries/{id}", get(library))
         .route("/libraries/{id}/items", get(library_items))
+        .route("/libraries/{id}/tree", get(library_tree))
         .route("/items/{id}", get(item))
         .route("/items/{id}/subtitles/{key}", get(stream::subtitle))
         .route("/items/{id}/progress", post(stream::progress))
@@ -259,6 +260,28 @@ async fn library_items(
     Ok(Json(ItemPage { total, items }))
 }
 
+#[derive(Serialize)]
+struct Folder {
+    name: String,
+    items: Vec<Card>,
+}
+
+/// The whole library by folder: folders in natural order, each with its videos in order.
+async fn library_tree(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> ApiResult<Json<Vec<Folder>>> {
+    let order = crate::tree::entries(&st.db, id).await?;
+    let cards: Vec<Card> = sqlx::query_as(&format!("{CARD} WHERE i.library_id = ?2")).bind(user.id).bind(id).fetch_all(&st.db).await?;
+    let mut by_id: std::collections::HashMap<i64, Card> = cards.into_iter().map(|c| (c.id, c)).collect();
+    let mut out: Vec<Folder> = Vec::new();
+    for e in order {
+        let Some(card) = by_id.remove(&e.id) else { continue };
+        match out.last_mut() {
+            Some(f) if f.name == e.folder => f.items.push(card),
+            _ => out.push(Folder { name: e.folder, items: vec![card] }),
+        }
+    }
+    Ok(Json(out))
+}
+
 #[derive(Serialize, sqlx::FromRow)]
 struct ItemDetail {
     #[sqlx(flatten)]
@@ -278,8 +301,6 @@ struct ItemDetail {
     #[sqlx(skip)]
     streams: Value,
     favorite: bool,
-    #[serde(skip)]
-    sort_title: String,
     #[sqlx(skip)]
     ext: String,
     #[sqlx(skip)]
@@ -298,7 +319,7 @@ struct ItemDetail {
 async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> ApiResult<Json<ItemDetail>> {
     let sql = format!(
         "SELECT c.*, l.name AS library_name, i.path, i.size, i.added_at, i.container, i.video_codec, i.bitrate, i.crop,
-           i.streams AS streams_raw, COALESCE(u.favorite, 0) AS favorite, i.sort_title
+           i.streams AS streams_raw, COALESCE(u.favorite, 0) AS favorite
          FROM ({CARD} WHERE i.id = ?2) c
          JOIN items i ON i.id = c.id JOIN libraries l ON l.id = i.library_id
          LEFT JOIN user_data u ON u.item_id = i.id AND u.user_id = ?1"
@@ -320,17 +341,11 @@ async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> Ap
     })
     .await
     .map_err(anyhow::Error::from)?;
-    // Neighbours in library order, for prev/next episode.
-    let sibling = |cmp: &str, dir: &str| {
-        format!("SELECT id FROM items WHERE library_id = ? AND (sort_title, id) {cmp} (?, ?) ORDER BY sort_title {dir}, id {dir} LIMIT 1")
-    };
-    for (cmp, dir, slot) in [(">", "ASC", &mut d.next_id), ("<", "DESC", &mut d.prev_id)] {
-        *slot = sqlx::query_scalar(&sibling(cmp, dir))
-            .bind(d.card.library_id)
-            .bind(&d.sort_title)
-            .bind(d.card.id)
-            .fetch_optional(&st.db)
-            .await?;
+    // Neighbours in tree order (folders, then videos), for prev/next episode.
+    let order = crate::tree::entries(&st.db, d.card.library_id).await?;
+    if let Some(at) = order.iter().position(|e| e.id == d.card.id) {
+        d.prev_id = at.checked_sub(1).map(|i| order[i].id);
+        d.next_id = order.get(at + 1).map(|e| e.id);
     }
     d.upscaled = upscale::versions(&st, d.card.id).await?;
     // Last episode: continue with the next season's library.

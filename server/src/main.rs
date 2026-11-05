@@ -12,6 +12,7 @@ mod scan;
 mod settings;
 mod stream;
 mod transcode;
+mod tree;
 mod upscale;
 mod narration;
 mod pipeline;
