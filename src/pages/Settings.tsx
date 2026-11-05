@@ -688,7 +688,7 @@ function Stages(props: { status: string; stage: number }) {
 function Narration() {
   const [ov, { refetch }] = createResource(() => api<NarrationOverview>("/admin/narration"));
   const [libs] = createResource(() => api<Lib[]>("/libraries"));
-  const [cfg, setCfg] = createSignal<NarrationConfig>({ voice_vi: "", voice_zh: "" });
+  const [cfg, setCfg] = createSignal<NarrationConfig>({ voice_vi: "", voice_zh: "", lessons: "" });
   // Fill the form once: the overview refreshes every few seconds and must not overwrite what is being typed.
   let filled = false;
   createEffect(on(() => ov()?.config, (c) => {
@@ -741,6 +741,10 @@ function Narration() {
         </label>
         <label>Chinese voice (edge-tts)
           <input value={cfg().voice_zh} onInput={(e) => set("voice_zh", e.currentTarget.value)} placeholder="zh-CN-XiaoxiaoNeural" />
+        </label>
+        <label class="check">
+          <input type="checkbox" checked={cfg().lessons === "1"} onChange={(e) => set("lessons", e.currentTarget.checked ? "1" : "0")} />
+          Subtitle files without a video or audio file are lessons (narrate them into an mp3; applies at the next scan)
         </label>
         <div class="row-btns">
           <button class="btn primary">Save</button>

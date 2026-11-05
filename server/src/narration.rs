@@ -51,6 +51,8 @@ const LANGS: &[(&str, &str, &str)] = &[
 const STALE_SECS: i64 = 900;
 const TOKEN_KEY: &str = "narration.token";
 const VOICE_VI_KEY: &str = "narration.voice_vi";
+/// "1": the scanner lists lessons that only have subtitles, to be narrated into audio.
+pub const LESSONS_KEY: &str = "narration.lessons";
 const VOICE_ZH_KEY: &str = "narration.voice_zh";
 const DEFAULT_VOICE_VI: &str = "Ngọc Huyền";
 const DEFAULT_VOICE_ZH: &str = "zh-CN-XiaoxiaoNeural";
@@ -87,10 +89,12 @@ fn lang_code(lang: &str) -> Option<&'static str> {
     })
 }
 
-/// A file name a worker may upload: `<lang>.srt` or `<lang>.voice.flac` (the voice alone).
+/// A file name a worker may upload: `<lang>.srt`, `<lang>.voice.flac` (the voice alone) or `<lang>.podcast.mp3`
+/// (the voice as the lesson's audio, for a lesson without a video).
 fn upload_ok(name: &str) -> bool {
     match name.rsplit_once('.') {
         Some((l, "srt")) => SUB_LANGS.contains(&l),
+        Some((l, "mp3")) => l.strip_suffix(".podcast").is_some_and(|l| LANGS.iter().any(|x| x.0 == l)),
         Some((l, "flac")) => l.strip_suffix(".voice").is_some_and(|l| LANGS.iter().any(|x| x.0 == l)),
         _ => false,
     }
@@ -150,6 +154,9 @@ async fn embed(st: &AppState, id: i64) -> anyhow::Result<()> {
     .await?;
     let streams: Vec<Value> = streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let d = dir(&st.cfg.data, item);
+    if audio_only(&path) {
+        return podcast(st, id, item, &path).await;
+    }
     let video = FsPath::new(&path);
     let (Some(folder), Some(stem), Some(ext)) =
         (video.parent(), video.file_stem().and_then(|s| s.to_str()), video.extension().and_then(|e| e.to_str()))
@@ -246,6 +253,41 @@ async fn embed(st: &AppState, id: i64) -> anyhow::Result<()> {
             }
         }
     }
+    let _ = tokio::fs::remove_dir_all(&d).await;
+    Ok(())
+}
+
+/// A lesson without a video: the first voice becomes `<name>.mp3` next to the subtitles (replacing an earlier one), the
+/// translations `<name>.<lang>.srt`; the item then points at the mp3. Nothing is muxed.
+async fn podcast(st: &AppState, id: i64, item: i64, path: &str) -> anyhow::Result<()> {
+    let d = dir(&st.cfg.data, item);
+    let src = FsPath::new(path);
+    let (Some(folder), true) = (src.parent(), src.file_stem().is_some()) else { anyhow::bail!("unexpected file name {path}") };
+    let stem = util::file_stem(path);
+    let base = if util::is_srt(path) { util::split_lang(&stem).0.to_owned() } else { stem };
+    let langs: String = sqlx::query_scalar("SELECT langs FROM narration_jobs WHERE id = ?").bind(id).fetch_one(&st.db).await?;
+    let voice = langs.split(',').map(|l| d.join(format!("{l}.podcast.mp3"))).find(|p| p.is_file());
+    let Some(voice) = voice else { anyhow::bail!("the worker uploaded no audio") };
+    let target = folder.join(format!("{base}.mp3"));
+    let tmp = folder.join(format!(".{base}.narrating.mp3"));
+    tokio::fs::copy(&voice, &tmp).await?;
+    tokio::fs::rename(&tmp, &target).await?;
+    if let Ok(mut rd) = tokio::fs::read_dir(&d).await {
+        while let Some(e) = rd.next_entry().await? {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if let Some(lang) = name.strip_suffix(".srt").filter(|l| SUB_LANGS.contains(l)) {
+                let sub = folder.join(format!("{base}.{lang}.srt"));
+                let tmp = folder.join(format!(".{base}.{lang}.srt.new"));
+                tokio::fs::copy(e.path(), &tmp).await?;
+                tokio::fs::rename(&tmp, &sub).await?;
+            }
+        }
+    }
+    let target = target.to_string_lossy().into_owned();
+    if target != path {
+        sqlx::query("UPDATE items SET path = ?, crop = NULL WHERE id = ?").bind(&target).bind(item).execute(&st.db).await?;
+    }
+    crate::scan::refresh_item(&st.db, item, &target).await?;
     let _ = tokio::fs::remove_dir_all(&d).await;
     Ok(())
 }
@@ -379,6 +421,9 @@ async fn worker_auth(st: &AppState, headers: &HeaderMap) -> ApiResult<()> {
 pub struct Config {
     voice_vi: String,
     voice_zh: String,
+    /// "1": subtitles without a video or audio file become lessons (scan.rs).
+    #[serde(default)]
+    lessons: String,
 }
 
 async fn config(st: &AppState) -> Config {
@@ -386,6 +431,7 @@ async fn config(st: &AppState) -> Config {
     Config {
         voice_vi: get(VOICE_VI_KEY).await.unwrap_or_else(|| DEFAULT_VOICE_VI.into()),
         voice_zh: get(VOICE_ZH_KEY).await.unwrap_or_else(|| DEFAULT_VOICE_ZH.into()),
+        lessons: get(LESSONS_KEY).await.unwrap_or_default(),
     }
 }
 
@@ -397,6 +443,11 @@ async fn job_item(st: &AppState, id: i64) -> ApiResult<(i64, String, Vec<Value>)
     .fetch_one(&st.db)
     .await?;
     Ok((item, path, streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()))
+}
+
+/// A lesson narrated into an mp3 of its own: a subtitle file with no video yet, or an audio file made that way.
+fn audio_only(path: &str) -> bool {
+    util::is_srt(path) || util::is_audio(FsPath::new(path))
 }
 
 /// The track the narration is mixed over: the default audio track, else the first.
@@ -439,6 +490,8 @@ pub struct Claimed {
     pipeline: pipeline::Graph,
     /// Text subtitles the video already has, by language code -> key for `subtitle`.
     subs: HashMap<String, String>,
+    /// A lesson with no video: the voice is made as an mp3 timeline of its own, line after line.
+    audio_only: bool,
     #[serde(flatten)]
     config: Config,
 }
@@ -481,6 +534,7 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
     };
     let (title, duration, path, streams): (String, Option<f64>, String, Option<String>) =
         sqlx::query_as("SELECT title, duration, path, streams FROM items WHERE id = ?").bind(item_id).fetch_one(&st.db).await?;
+    let item_path = path.clone();
     let streams: Value = streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let tracks = tokio::task::spawn_blocking(move || crate::stream::subtitle_tracks(&path, &streams))
         .await
@@ -491,12 +545,20 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
             subs.entry(code.to_owned()).or_insert(t.key);
         }
     }
+    let audio_only = audio_only(&item_path);
+    if util::is_srt(&item_path) {
+        // The lesson is the subtitle file itself ("<name>.<lang>.srt").
+        let stem = util::file_stem(&item_path);
+        if let Some(code) = util::split_lang(&stem).1.and_then(lang_code) {
+            subs.insert(code.to_owned(), "self".to_owned());
+        }
+    }
     tracing::info!("narration job {job_id} (item {item_id}) -> {worker}");
     let pipeline = match graph.and_then(|g| serde_json::from_str(&g).ok()) {
         Some(g) => g,
         None => legacy_graph(&source, &langs),
     };
-    Ok(Json(Claimed { job_id, item_id, title, duration, pipeline, subs, config: config(&st).await }).into_response())
+    Ok(Json(Claimed { job_id, item_id, title, duration, pipeline, subs, audio_only, config: config(&st).await }).into_response())
 }
 
 /// Jobs queued before pipelines (2.3.0): the Whisper preset with their spoken language and voices.
@@ -552,7 +614,11 @@ pub async fn audio(State(st): State<AppState>, headers: HeaderMap, Path(id): Pat
 /// An existing subtitle of the job's video as SRT.
 pub async fn subtitle(State(st): State<AppState>, headers: HeaderMap, Path((id, key)): Path<(i64, String)>) -> ApiResult<Response> {
     worker_auth(&st, &headers).await?;
-    let (item, ..) = job_item(&st, id).await?;
+    let (item, path, _) = job_item(&st, id).await?;
+    if key == "self" && util::is_srt(&path) {
+        let text = String::from_utf8_lossy(&tokio::fs::read(&path).await.map_err(anyhow::Error::from)?).into_owned();
+        return Ok(([(axum::http::header::CONTENT_TYPE, "application/x-subrip; charset=utf-8")], text).into_response());
+    }
     let (input, map, _) = crate::stream::subtitle_source(&st, item, &key).await?;
     let out = Command::new("ffmpeg")
         .args(["-v", "error", "-nostdin", "-i"])
@@ -697,7 +763,7 @@ pub async fn overview(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<O
 }
 
 pub async fn save_config(State(st): State<AppState>, _a: Admin, Json(c): Json<Config>) -> ApiResult<StatusCode> {
-    for (k, v) in [(VOICE_VI_KEY, c.voice_vi.trim()), (VOICE_ZH_KEY, c.voice_zh.trim())] {
+    for (k, v) in [(VOICE_VI_KEY, c.voice_vi.trim()), (VOICE_ZH_KEY, c.voice_zh.trim()), (LESSONS_KEY, if c.lessons == "1" { "1" } else { "0" })] {
         sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
             .bind(k)
             .bind(v)
@@ -741,11 +807,16 @@ async fn preset(st: &AppState, id: &str) -> ApiResult<(String, pipeline::Graph)>
     Ok((name, serde_json::from_str(&graph).map_err(anyhow::Error::from)?))
 }
 
+fn pipeline_has_media_source(g: &pipeline::Graph) -> bool {
+    g.nodes.iter().any(|n| matches!(n.kind.as_str(), "whisper" | "ocr"))
+}
+
 /// Queues videos (or a whole library) with a pipeline. A failed or finished job is queued again and redone from the
 /// start (subtitles, translation, voices); one that is waiting, running or paused is left alone.
 pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) -> ApiResult<Json<u64>> {
     let (name, graph) = preset(&st, q.preset.as_deref().unwrap_or("whisper")).await?;
     let summary = pipeline::validate(&graph, SUB_LANGS).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    let graph_value = graph.clone();
     let graph = serde_json::to_string(&graph).map_err(anyhow::Error::from)?;
     let mut ids = q.item_ids;
     if let Some(lib) = q.library_id {
@@ -753,7 +824,13 @@ pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) 
     }
     let now = util::now();
     let mut added = 0;
+    // A lesson without a video has nothing to transcribe or read off the picture: only subtitle sources fit.
+    let only_subs = !pipeline_has_media_source(&graph_value);
     for id in ids {
+        let path: Option<String> = sqlx::query_scalar("SELECT path FROM items WHERE id = ?").bind(id).fetch_optional(&st.db).await?;
+        if path.is_some_and(|p| audio_only(&p)) && !only_subs {
+            continue;
+        }
         added += sqlx::query(
             "INSERT INTO narration_jobs (item_id, source, langs, preset, pipeline, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
              ON CONFLICT (item_id) DO UPDATE SET status = 'queued', source = excluded.source, langs = excluded.langs,

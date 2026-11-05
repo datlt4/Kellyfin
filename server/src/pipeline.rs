@@ -89,6 +89,20 @@ fn ocr_graph(vi: &str) -> Graph {
     }
 }
 
+/// The lesson's own English subtitles, read in Vietnamese. Works for lessons with no video (the result is an mp3) and
+/// for videos that have an English subtitle file (the voice is muxed into the video).
+fn subtitle_graph() -> Graph {
+    Graph {
+        nodes: vec![
+            node("src", "subtitle", "en", 40.0, 150.0),
+            node("vi", "translate", "vi", 320.0, 150.0),
+            voice("vvi", "edge", 600.0, 150.0),
+            node("mux", "mux", "", 880.0, 150.0),
+        ],
+        edges: edges(&[("src", "vi"), ("vi", "vvi"), ("vvi", "mux")]),
+    }
+}
+
 /// (id, name, graph) of the built-in presets; the "edge-tts only" ones read Vietnamese with edge-tts too, for a
 /// machine without VieNeu (a CPU-only one).
 pub fn builtins() -> Vec<(&'static str, &'static str, Graph)> {
@@ -97,6 +111,7 @@ pub fn builtins() -> Vec<(&'static str, &'static str, Graph)> {
         ("ocr", "Default · OCR (burned-in subtitles)", ocr_graph("vieneu")),
         ("whisper-edge", "Whisper · edge-tts only (no VieNeu)", whisper_graph("edge")),
         ("ocr-edge", "OCR · edge-tts only (no VieNeu)", ocr_graph("edge")),
+        ("subs-edge", "English subtitles → Vietnamese voice (edge-tts) · audio lessons", subtitle_graph()),
     ]
 }
 
@@ -217,7 +232,7 @@ mod tests {
     fn builtins_are_valid() {
         for (_, name, g) in builtins() {
             let s = validate(&g, LANGS).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert_eq!(s.voices.len(), 2, "{name}");
+            assert!(!s.voices.is_empty(), "{name}");
         }
     }
 

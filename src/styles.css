@@ -297,6 +297,11 @@ main { padding-bottom: 48px; }
   overflow: hidden;
 }
 .player video { width: 100%; height: 100%; object-fit: contain; display: block; touch-action: none; }
+/* Audio lessons: pure black (an AMOLED screen switches those pixels off) and one dim logo. */
+.player.audio { background: #000; }
+.player.audio video { opacity: 0; }
+.audio-face { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.audio-face img { width: 72px; height: 72px; opacity: 0.22; filter: grayscale(1); }
 .icon.on { color: var(--accent-2); }
 .icon.small { width: 28px; height: 28px; }
 .vol { display: flex; align-items: center; }

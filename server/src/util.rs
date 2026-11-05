@@ -5,6 +5,14 @@ pub const VIDEO_EXT: &[&str] = &[
     "mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg", "3gp", "ogv",
 ];
 
+pub const AUDIO_EXT: &[&str] = &["mp3", "m4a", "aac", "ogg", "oga", "opus", "flac", "wav"];
+
+/// Language tags that end a subtitle's stem ("Lesson 1.en.srt").
+const LANG_TAGS: &[&str] = &[
+    "en", "eng", "vi", "vie", "zh", "zho", "chi", "ja", "jpn", "ko", "kor", "de", "deu", "fr", "fra", "es", "spa", "it", "ita",
+    "pt", "por", "ru", "rus", "th", "tha", "id", "ind", "ms", "msa",
+];
+
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -13,6 +21,24 @@ pub fn is_video(p: &Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| VIDEO_EXT.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+pub fn is_audio(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| AUDIO_EXT.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+pub fn is_srt(p: &str) -> bool {
+    p.len() > 4 && p[p.len() - 4..].eq_ignore_ascii_case(".srt")
+}
+
+/// "Lesson 1.en" -> ("Lesson 1", Some("en")); anything else is returned whole.
+pub fn split_lang(stem: &str) -> (&str, Option<&str>) {
+    match stem.rsplit_once('.') {
+        Some((base, l)) if !base.is_empty() && LANG_TAGS.contains(&l.to_ascii_lowercase().as_str()) => (base, Some(l)),
+        _ => (stem, None),
+    }
 }
 
 pub fn file_stem(path: &str) -> String {
@@ -65,6 +91,14 @@ pub fn random_hex(bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_language_tags() {
+        assert_eq!(split_lang("001 Intro.en"), ("001 Intro", Some("en")));
+        assert_eq!(split_lang("Dr.Who"), ("Dr.Who", None));
+        assert_eq!(split_lang("en"), ("en", None));
+        assert!(is_srt("/a/b.EN.SRT") && !is_srt("/a/b.mp3") && is_audio(Path::new("/a/b.MP3")));
+    }
 
     #[test]
     fn sort_key_natural_and_folded() {

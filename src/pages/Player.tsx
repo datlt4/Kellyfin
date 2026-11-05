@@ -5,7 +5,7 @@ import { nativeFullscreen, setFullscreen, setPlaying as keepPlaying } from "../n
 import { airplay, castAvailable, castDevice, castLoad, castSeek, castToggle, initCast, remotePaused, remoteTime, requestCast, stopCast } from "../cast";
 import { api, authToken, fmtClock, img, mediaUrl, server, streamLabel, subLabel, type ItemDetail } from "../api";
 import {
-  audioStreams, autoQuality, bandwidth, canCopyAudio, screenP, cueAt, defaultAudio, defaultSub, defaultSub2, mseHls, nativeHls, originalMode, parseVtt,
+  audioStreams, autoQuality, bandwidth, canCopyAudio, isAudio, screenP, cueAt, defaultAudio, defaultSub, defaultSub2, mseHls, nativeHls, originalMode, parseVtt,
   preferredQuality, qualities, remember, subLang, type Cue, type Mode, type Quality,
 } from "../playback";
 
@@ -183,7 +183,7 @@ function PlayerView(props: { id: string }) {
 
   /** Original file when the browser can play it, else a transcode. */
   function modeFor(it: ItemDetail, a: number | null, q: Quality): Mode {
-    if (typeof q === "string" && q.startsWith("ai:")) return "direct";
+    if (isAudio(it) || (typeof q === "string" && q.startsWith("ai:"))) return "direct";
     const m = (q === "orig" && originalMode(it, a)) || "hls";
     if (m === "hls" && q === "orig") setQuality("auto"); // original not playable here
     return m;
@@ -548,14 +548,16 @@ function PlayerView(props: { id: string }) {
     return ((offset() + b.end(b.length - 1)) / duration()) * 100;
   };
 
+  const audioOnly = () => !!item() && isAudio(item()!);
+
   return (
-    <div class="player" classList={{ "ui-hidden": !ui() }} ref={root} onPointerMove={(e) => e.pointerType === "mouse" && poke()} onPointerLeave={onLeave}>
+    <div class="player" classList={{ "ui-hidden": !ui(), audio: audioOnly() }} ref={root} onPointerMove={(e) => e.pointerType === "mouse" && poke()} onPointerLeave={onLeave}>
       <video
         ref={video}
         x-webkit-airplay="allow"
         playsinline
         preload="auto"
-        poster={item() ? img(item()!, "l") : undefined}
+        poster={item() && !audioOnly() ? img(item()!, "l") : undefined}
         onPlay={() => { setPlaying(true); keepPlaying(true); poke(); }}
         onPause={() => { setPlaying(false); keepPlaying(false); setUi(true); report(); }}
         onWaiting={() => {
@@ -585,6 +587,7 @@ function PlayerView(props: { id: string }) {
           const at = now();
           pendingAt = null;
           // Browser refused the file after all: fall back to a remux, then to a transcode.
+          if (isAudio(item()!)) return fail("This device cannot play this audio file.");
           if (mode() === "direct") setMode("remux");
           else if (mode() === "remux") setMode("hls");
           else return fail("Playback failed.");
@@ -594,6 +597,10 @@ function PlayerView(props: { id: string }) {
         onResize={measure}
         style={{ transform: cropTransform() }}
       />
+
+      <Show when={audioOnly()}>
+        <div class="audio-face"><img src="/favicon.svg" alt="" /></div>
+      </Show>
 
       <Show when={hud()}>
         {(h) => (

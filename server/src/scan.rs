@@ -133,7 +133,7 @@ impl Scanner {
 
         let todo: Vec<(i64, String, f64, Option<String>)> = sqlx::query_as(
             "SELECT id, path, duration, crop FROM items
-             WHERE image_ver IS NULL AND duration > 0 AND (?1 IS NULL OR library_id = ?1)",
+             WHERE image_ver IS NULL AND duration > 0 AND video_codec IS NOT NULL AND (?1 IS NULL OR library_id = ?1)",
         )
         .bind(only)
         .fetch_all(db)
@@ -169,27 +169,61 @@ struct FileInfo {
     mtime: i64,
 }
 
-fn walk(roots: &[String]) -> HashMap<String, FileInfo> {
+/// Videos, audio files, and (when `lessons_from_subs`) lessons that only have subtitles: one `.srt` per name (English first) that no video or
+/// audio file of the same name goes with. Narration turns such a lesson into an mp3 (narration.rs).
+fn walk(roots: &[String], lessons_from_subs: bool) -> HashMap<String, FileInfo> {
     let mut found = HashMap::new();
+    let mut media = std::collections::HashSet::new(); // (folder, stem) of videos and audio files
+    let mut subs: Vec<PathBuf> = Vec::new();
     for root in roots {
         let it = WalkDir::new(root)
             .follow_links(true)
             .into_iter()
             .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'));
         for e in it.flatten() {
-            if !e.file_type().is_file() || !util::is_video(e.path()) {
+            let p = e.path();
+            if !e.file_type().is_file() {
                 continue;
             }
-            let (Some(path), Ok(meta)) = (e.path().to_str(), e.metadata()) else { continue };
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_secs() as i64);
-            found.insert(path.to_owned(), FileInfo { size: meta.len() as i64, mtime });
+            let Some(path) = p.to_str() else { continue };
+            if lessons_from_subs && util::is_srt(path) {
+                subs.push(p.to_path_buf());
+            }
+            if !util::is_video(p) && !util::is_audio(p) {
+                continue;
+            }
+            let Ok(meta) = e.metadata() else { continue };
+            media.insert((p.parent().map(Path::to_path_buf), util::file_stem(path)));
+            found.insert(path.to_owned(), file_info(&meta));
+        }
+    }
+    subs.sort();
+    let mut lessons: HashMap<(Option<PathBuf>, String), (PathBuf, bool)> = HashMap::new();
+    for p in subs {
+        let Some(path) = p.to_str() else { continue };
+        let stem = util::file_stem(path);
+        let (base, lang) = util::split_lang(&stem);
+        let dir = p.parent().map(Path::to_path_buf);
+        if media.contains(&(dir.clone(), stem.clone())) || media.contains(&(dir.clone(), base.to_owned())) {
+            continue;
+        }
+        let english = lang.is_some_and(|l| l.eq_ignore_ascii_case("en") || l.eq_ignore_ascii_case("eng"));
+        let slot = lessons.entry((dir, base.to_owned())).or_insert_with(|| (p.clone(), english));
+        if english && !slot.1 {
+            *slot = (p, true);
+        }
+    }
+    for (p, _) in lessons.into_values() {
+        if let (Some(path), Ok(meta)) = (p.to_str(), std::fs::metadata(&p)) {
+            found.insert(path.to_owned(), file_info(&meta));
         }
     }
     found
+}
+
+fn file_info(meta: &std::fs::Metadata) -> FileInfo {
+    let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64);
+    FileInfo { size: meta.len() as i64, mtime }
 }
 
 async fn sync_library(db: &SqlitePool, images: &Path, lib: i64) -> anyhow::Result<()> {
@@ -201,7 +235,8 @@ async fn sync_library(db: &SqlitePool, images: &Path, lib: i64) -> anyhow::Resul
         tracing::warn!("library {lib}: no reachable folder, skipped");
         return Ok(());
     }
-    let found = tokio::task::spawn_blocking(move || walk(&roots)).await?;
+    let lessons = crate::settings::get(db, crate::narration::LESSONS_KEY).await.as_deref() == Some("1");
+    let found = tokio::task::spawn_blocking(move || walk(&roots, lessons)).await?;
     let known: Vec<(i64, String, i64, i64)> =
         sqlx::query_as("SELECT id, path, size, mtime FROM items WHERE library_id = ?").bind(lib).fetch_all(db).await?;
 
@@ -233,7 +268,8 @@ async fn sync_library(db: &SqlitePool, images: &Path, lib: i64) -> anyhow::Resul
         sqlx::query("DELETE FROM items WHERE id = ?").bind(id).execute(&mut *tx).await?;
     }
     for (path, f) in found.iter().filter(|(p, _)| !seen.contains(*p)) {
-        let title = util::file_stem(path);
+        let stem = util::file_stem(path);
+        let title = if util::is_srt(path) { util::split_lang(&stem).0.to_owned() } else { stem };
         sqlx::query(
             "INSERT INTO items (library_id, path, title, sort_title, size, mtime, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
@@ -410,6 +446,25 @@ mod tests {
         assert_eq!(p.video_codec.as_deref(), Some("h264"));
         assert_eq!(p.streams.as_array().unwrap().len(), 2);
         assert_eq!(p.streams[1]["lang"], "vie");
+    }
+
+    #[test]
+    fn walk_lists_lessons_without_media() {
+        let d = std::env::temp_dir().join(format!("kellyfin-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for f in ["001 A.en.srt", "001 A.mp4", "003 B.en.srt", "003 B.vi.srt", "004 C.srt", "005 D.mp3", "005 D.en.srt"] {
+            std::fs::write(d.join(f), "x").unwrap();
+        }
+        let roots = [d.to_string_lossy().into_owned()];
+        let names = |on| {
+            let mut v: Vec<String> = walk(&roots, on).keys().map(|k| k.rsplit('/').next().unwrap().to_owned()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(names(false), ["001 A.mp4", "005 D.mp3"]);
+        assert_eq!(names(true), ["001 A.mp4", "003 B.en.srt", "004 C.srt", "005 D.mp3"]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

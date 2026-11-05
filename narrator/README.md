@@ -18,6 +18,16 @@ Whisper" and "Default · OCR"; duplicate one to make your own), in four stages s
 4. **Mux**, on the Kellyfin server: the voice over the original sound, which ducks while the voice speaks. The worker
    hands the voice over and takes the next video meanwhile.
 
+## Audio lessons (subtitles only, no video)
+
+Courses often come with `.en.srt` files for lessons whose video did not download. Turn on **Settings → Narration →
+"Subtitle files without a video or audio file are lessons"**, scan, and each such `.srt` is listed as a lesson. Queue
+the **"English subtitles → Vietnamese voice (edge-tts) · audio lessons"** pipeline (or a copy of it: `subtitle` →
+`translate` → `voice` with edge-tts) on the library. The worker joins the cues into sentences, translates them, reads
+them one after the other and Kellyfin saves `<name>.mp3` and `<name>.vi.srt` next to the subtitles; the lesson then plays
+like a podcast on a black screen with a dim logo, subtitles included. Videos in the same library that have an English
+subtitle file get the voice muxed in as before. Whisper and OCR pipelines skip lessons. Needs edge-tts (Internet).
+
 ## Several videos at once
 
 The worker works on up to `WORKER_JOBS` videos (default 3) at the same time, but OCR, Whisper, translation and VieNeu

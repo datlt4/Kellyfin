@@ -6,7 +6,7 @@ import Row from "../components/Row";
 import Icon from "../components/Icon";
 import Select from "../components/Select";
 import { notify } from "../components/Toast";
-import { audioStreams, defaultAudio, defaultSub } from "../playback";
+import { audioStreams, defaultAudio, defaultSub, isAudio, isLesson } from "../playback";
 
 export default function Item() {
   const params = useParams();
@@ -91,13 +91,21 @@ export default function Item() {
             <h1>{it().title}</h1>
             <div class="facts">
               <span>{fmtDuration(it().duration)}</span>
-              <span>{fmtRes(it().height, it().width)} {it().video_codec?.toUpperCase()}</span>
+              <Show when={!isAudio(it()) && !isLesson(it())}>
+                <span>{fmtRes(it().height, it().width)} {it().video_codec?.toUpperCase()}</span>
+              </Show>
+              <Show when={isAudio(it())}><span>Audio</span></Show>
               <span>{(it().size / 1048576).toFixed(0)} MB</span>
             </div>
+            <Show when={isLesson(it())}>
+              <p class="muted">Subtitles only so far: queue "Narration" with the subtitles pipeline to make its audio.</p>
+            </Show>
             <div class="actions">
+              <Show when={!isLesson(it())}>
               <A class="btn primary" href={playHref()}>
                 <Icon name="play" size={18} /> {resumable() ? `Resume ${fmtClock(it().position)}` : "Play"}
               </A>
+              </Show>
               <Show when={resumable()}>
                 <A class="btn" href={playHref(true)}>From start</A>
               </Show>

@@ -36,6 +36,11 @@ export function canCopyAudio(it: ItemDetail, audio: number | null) {
 const appleWebKit =
   /AppleWebKit/.test(navigator.userAgent) && /Macintosh|iPhone|iPad|iPod/.test(navigator.userAgent) && !/Chrome\/|Android/.test(navigator.userAgent);
 
+/** An audio file (a narrated lesson): played as-is on a black screen. */
+export const isAudio = (it: ItemDetail) => ["mp3", "m4a", "aac", "ogg", "oga", "opus", "flac", "wav"].includes(it.ext);
+/** A lesson that only has subtitles so far: nothing to play until narration makes its audio. */
+export const isLesson = (it: ItemDetail) => it.ext === "srt";
+
 export const audioStreams = (it: ItemDetail): Stream[] => it.streams?.filter((s) => s.type === "audio") ?? [];
 
 /** The track a browser plays from the raw file: flagged default, else the first. */
@@ -49,6 +54,7 @@ export const nativeAudio = (it: ItemDetail) => {
  * otherwise copy-remux on the server (cheap) when the video codec itself is playable; else null (transcode).
  */
 export function originalMode(it: ItemDetail, audio: number | null): "direct" | "remux" | null {
+  if (isAudio(it)) return "direct";
   const a = audioStreams(it).find((s) => s.index === audio) ?? nativeAudio(it);
   const container = ["mp4", "m4v", "mov"].includes(it.ext) ? "mp4" : it.ext === "webm" ? "webm" : null;
   const smallIndex = (it.index_size ?? 0) <= MAX_DIRECT_INDEX;

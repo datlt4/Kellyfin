@@ -326,8 +326,25 @@ EDGE_VOICES = {
 }
 
 
-def tts_edge(cues, voice, duration, dest, tmp, on_progress):
-    """edge-tts per line, each placed at its start on one timeline."""
+PODCAST_GAP = 0.45  # seconds of silence between two lines of an audio lesson
+
+
+def sentences(cues, limit=350):
+    """Subtitle cues joined into sentences (a cue often ends mid-sentence): read and translated whole, they sound right."""
+    out, cur = [], None
+    for s, e, t in cues:
+        cur = (cur[0], e, f"{cur[2]} {t}") if cur else (s, e, t)
+        if re.search(r"[.!?…:;]['\"”’)\]]*$", t.strip()) or len(cur[2]) >= limit:
+            out.append(cur)
+            cur = None
+    if cur:
+        out.append(cur)
+    return out
+
+
+def tts_edge(cues, voice, duration, dest, tmp, on_progress, sequential=False):
+    """edge-tts per line, each placed at its start on one timeline; `sequential`: one line after the other (an audio
+    lesson has no picture to keep time with), so a line is never cut or laid over the next."""
     import edge_tts
 
     async def synth(text, out):
@@ -393,7 +410,6 @@ def tts_edge(cues, voice, duration, dest, tmp, on_progress):
     if failed:
         log(f"edge-tts skipped {len(failed)} lines: {[t[:30] for t in failed]}")
     # Every cue on one 48 kHz stereo timeline as long as the video.
-    buf = np.zeros(int((duration + 1) * SR) * 2, dtype=np.int32)
     def decode(mp3):
         r = subprocess.run(["ffmpeg", "-v", "error", "-i", mp3, "-f", "s16le", "-ac", "2", "-ar", str(SR), "-"],
                            capture_output=True)
@@ -409,7 +425,7 @@ def tts_edge(cues, voice, duration, dest, tmp, on_progress):
             await asyncio.gather(*(synth(t, os.path.join(voice_dir, f"{i:05}.mp3")) for i, t in redo), return_exceptions=True)
 
         asyncio.run(again())
-    unreadable = []
+    unreadable, placed, cursor = [], [], 0
     for i, (start, _, text) in enumerate(cues):
         mp3 = os.path.join(voice_dir, f"{i:05}.mp3")
         if not os.path.isfile(mp3):
@@ -419,7 +435,13 @@ def tts_edge(cues, voice, duration, dest, tmp, on_progress):
             unreadable.append(text)
             continue
         a = np.frombuffer(pcm[: len(pcm) // 4 * 4], dtype=np.int16).astype(np.int32)
-        off = int(start * SR) * 2
+        if sequential:
+            placed.append((cursor, a))
+            cursor += len(a) + int(PODCAST_GAP * SR) * 2
+        else:
+            placed.append((int(start * SR) * 2, a))
+    buf = np.zeros(cursor if sequential else int((duration + 1) * SR) * 2, dtype=np.int32)
+    for off, a in placed:
         n = max(0, min(len(a), len(buf) - off))
         buf[off: off + n] += a[:n]
     if unreadable:
@@ -427,7 +449,8 @@ def tts_edge(cues, voice, duration, dest, tmp, on_progress):
         if len(failed) + len(unreadable) > max(3, len(todo) // 10):
             raise JobError(f"edge-tts gave no usable audio for {len(failed) + len(unreadable)} of {len(todo)} lines")
     pcm = np.clip(buf, -32767, 32767).astype(np.int16).tobytes()
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "s16le", "-ac", "2", "-ar", str(SR), "-i", "-", dest],
+    mp3 = ["-ac", "1", "-b:a", "80k"] if dest.endswith(".mp3") else []
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "s16le", "-ac", "2", "-ar", str(SR), "-i", "-", *mp3, dest],
                    input=pcm, check=True)
 
 
@@ -658,6 +681,7 @@ def process(job):
     jid = job["job_id"]
     base = FILMSUB
     subs, duration = job.get("subs") or {}, job.get("duration") or 0
+    audio_only = bool(job.get("audio_only"))
     g = job["pipeline"]
     nodes = {n["id"]: n for n in g["nodes"]}
     feeds = {}
@@ -747,6 +771,8 @@ def process(job):
                 raise JobError(f"the video has no {lang} subtitles")
             step(1, f"Using the video's {lang} subtitles")
             texts[nid] = (lang, existing(lang))
+            if audio_only:
+                texts[nid] = (lang, sentences(texts[nid][1]))
         elif kind == "whisper":
             audio = fetch("audio")
             step(1, f"Transcribing {'the spoken language' if lang == 'auto' else lang} (Whisper)")
@@ -805,9 +831,26 @@ def process(job):
             if not duration:  # unprobed video: the timeline ends with the last line
                 duration = max(c[1] for c in cues) + 1
             plan.append((n, lang, cues))
+        if audio_only and len(plan) > 1:
+            log(f"job {jid}: an audio lesson has one voice, reading {plan[0][1]} only")
+            plan = plan[:1]
 
         def speak(n, lang, cues):
             wav = os.path.join(tmp, f"{lang}.voice.wav")
+            if audio_only:
+                if n.get("engine") == "vieneu":
+                    raise JobError("an audio lesson is read by edge-tts: set the voice node to edge-tts")
+                voice = n.get("voice") or (job["voice_zh"] if lang == "zh" else EDGE_VOICES.get(lang))
+                if not voice:
+                    raise JobError(f"no edge-tts voice for {lang}: set one on the voice node")
+                label = f"Reading {lang} aloud as audio (edge-tts {voice})"
+                step(3, label)
+                mp3 = os.path.join(tmp, f"{lang}.podcast.mp3")
+                tts_edge(cues, voice, duration, mp3, tmp, lambda f, label=label: step(3, label, f), sequential=True)
+                kf_upload(jid, f"{lang}.podcast.mp3", mp3)
+                log(f"job {jid}: {lang} audio uploaded ({os.path.getsize(mp3) >> 20} MB)")
+                done[3] += 1
+                return
             if n.get("engine") == "vieneu":
                 label = "Reading vi aloud (VieNeu)"
                 srt = os.path.join(tmp, f"{lang}.voice.srt")
