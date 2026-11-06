@@ -1072,6 +1072,11 @@ def health():
         r.raise_for_status()
         return True, r.text.strip()
 
+    def openrouter_ok():  # the OpenRouter OCR engine talks to openrouter.ai directly, not via film-sub
+        r = requests.get("https://openrouter.ai/api/v1/models", timeout=15)
+        r.raise_for_status()
+        return True, f"{len(r.json().get('data', []))} models"
+
     voices = []
 
     def vieneu_ok():
@@ -1100,7 +1105,8 @@ def health():
 
     checks = [probe("Whisper (subtitles)", whisper_ok), probe("EasyOCR (burned-in subtitles)", ocr_ok),
               probe("Argos (translation)", argos_ok),
-              probe("VieNeu (Vietnamese voice)", vieneu_ok), probe("edge-tts (Chinese voice, Internet)", edge_ok)]
+              probe("VieNeu (Vietnamese voice)", vieneu_ok), probe("edge-tts (Chinese voice, Internet)", edge_ok),
+              probe("OpenRouter (free vision OCR)", openrouter_ok)]
     _report.update(at=now, checks=checks, voices=voices)
     return checks, voices
 

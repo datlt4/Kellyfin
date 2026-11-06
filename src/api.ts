@@ -347,7 +347,7 @@ function needed(g: PipeGraph): string[] {
   const out = new Set<string>();
   for (const n of g.nodes) {
     if (n.type === "whisper") out.add("Whisper");
-    else if (n.type === "ocr") out.add("EasyOCR");
+    else if (n.type === "ocr") out.add(n.engine === "openrouter" ? "OpenRouter" : "EasyOCR");
     else if (n.type === "translate") out.add("Argos");
     else if (n.type === "voice") out.add(n.engine === "vieneu" ? "VieNeu" : "edge-tts");
   }
