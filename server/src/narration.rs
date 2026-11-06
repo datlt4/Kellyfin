@@ -482,10 +482,13 @@ fn sub_map(item_path: &str, tracks: Vec<crate::stream::SubTrack>) -> HashMap<Str
         }
     }
     if util::is_srt(item_path) {
-        // The lesson is the subtitle file itself ("<name>.<lang>.srt").
+        // The lesson is the subtitle file itself ("<name>.<lang>.srt"); an empty one is not input.
         let stem = util::file_stem(item_path);
-        if let Some(code) = util::split_lang(&stem).1.and_then(lang_code) {
-            subs.insert(code.to_owned(), "self".to_owned());
+        let nonempty = std::fs::metadata(item_path).map(|m| m.len() > 0).unwrap_or(false);
+        if nonempty {
+            if let Some(code) = util::split_lang(&stem).1.and_then(lang_code) {
+                subs.insert(code.to_owned(), "self".to_owned());
+            }
         }
     }
     subs

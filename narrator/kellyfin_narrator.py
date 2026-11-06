@@ -255,6 +255,8 @@ def detect(base, cues):
 
 
 def translate(base, cues, source, lang, on_progress):
+    if not cues:
+        raise JobError(f"the {source} subtitles are empty — no lines to translate")
     src, target = argos_code(base, source), argos_code(base, lang)
     s = requests.Session()
     done = [0]

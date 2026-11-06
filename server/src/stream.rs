@@ -196,6 +196,10 @@ fn external_subs(video: &str) -> Vec<(std::path::PathBuf, Option<String>, String
             let rest = name.strip_prefix(stem)?.strip_prefix('.')?;
             let (mid, ext) = rest.rsplit_once('.').map_or(("", rest), |(m, x)| (m, x));
             let ext = ext.to_ascii_lowercase();
+            // A zero-byte subtitle is a broken download, not a track: it is not input for anything.
+            if std::fs::metadata(e.path()).map(|m| m.len() == 0).unwrap_or(true) {
+                return None;
+            }
             SUB_EXT.contains(&ext.as_str()).then(|| (e.path(), (!mid.is_empty()).then(|| mid.to_owned()), ext))
         })
         .collect();
@@ -328,9 +332,11 @@ mod tests {
     fn finds_external_subs() {
         let d = std::env::temp_dir().join(format!("kf-subs-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        for f in ["Ep 1.mp4", "Ep 1.vi.srt", "Ep 1.srt", "Ep 10.en.srt", "Ep 1.nfo"] {
-            std::fs::write(d.join(f), "").unwrap();
+        for f in ["Ep 1.mp4", "Ep 1.vi.srt", "Ep 1.srt", "Ep 10.en.srt", "Ep 1.nfo", "Ep 10.vi.srt"] {
+            std::fs::write(d.join(f), "1\n00:00:01,000 --> 00:00:02,000\nhi\n").unwrap();
         }
+        std::fs::write(d.join("Ep 1.empty.srt"), "").unwrap();  // a zero-byte file is not a track
+
         let v = d.join("Ep 1.mp4");
         let t = subtitle_tracks(v.to_str().unwrap(), &serde_json::json!([{"index": 2, "type": "subtitle", "codec": "hdmv_pgs_subtitle"}]));
         let got: Vec<_> = t.iter().map(|s| (s.key.as_str(), s.lang.as_deref(), s.supported)).collect();
