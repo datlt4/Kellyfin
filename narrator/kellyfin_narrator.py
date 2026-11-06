@@ -18,6 +18,7 @@ Environment: KELLYFIN_URL, KELLYFIN_NARRATOR_TOKEN (Settings -> Narration), FILM
 compose's nginx), WORKER_NAME, POLL_SECONDS (15), WORK_DIR, TRANSLATE_WORKERS (6), EDGE_TTS_PARALLEL (12).
 """
 import asyncio
+import base64
 import contextlib
 import json
 import os
@@ -520,6 +521,69 @@ def to_flac(voice, dest):
 
 # Watermarks and site captions that OCR picks up and a voice must not read.
 OCR_JUNK = re.compile(r"sohu|iqiyi|youku|\bqq\b|bilibili|tencent|mgtv|https?:|www\.|\.com|1905", re.I)
+
+OPENROUTER_BATCH = 4  # frames per request, per the owner's chosen cap
+
+OPENROUTER_PROMPT = ("You are OCR. These images are frames from a video, in chronological order, each showing the same band of the frame where the subtitle "
+                     "appears. For each image, read ONLY the burned-in subtitle text (Vietnamese). Return ONLY a JSON array of {\"i\": <1-based image index>, "
+                     "\"text\": <string>|null}. null if the image has no subtitle. Keep diacritics and punctuation exactly. Do not output anything else.")
+
+
+def openrouter_ocr_batch(items, key, primary, fallback):
+    """One OpenRouter request with up to OPENROUTER_BATCH frames (the model and its fallback are tried once each).
+    items: [(t, jpeg_bytes), ...] in order; returns [text|None, ...] per item.
+    Raises JobError when both models are unavailable / failed / rate-limited into the ground."""
+    images = [base64.b64encode(b).decode() for _, b in items]
+    body = {
+        "messages": [{"role": "user", "content": None}],  # filled per model retry below
+        "reasoning": {"enabled": False},
+    }
+    for model in (primary, fallback):
+        body["model"] = model
+        content = [{"type": "text", "text": OPENROUTER_PROMPT}]
+        for i, b64 in enumerate(images, 1):
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+        body["messages"] = [{"role": "user", "content": content}]
+        for attempt in (1, 2):
+            try:
+                r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                                  headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                                  json=body, timeout=240)
+            except requests.RequestException as e:
+                log(f"OpenRouter request failed ({model}): {e}")
+                break
+            if r.status_code == 429:
+                log(f"OpenRouter rate limit on {model}; holding the batch for 45 s")
+                time.sleep(45)
+                continue
+            try:
+                r.raise_for_status()
+            except requests.HTTPError:
+                log(f"OpenRouter HTTP {r.status_code} from {model}: {r.text[:300]}")
+                break
+            text = r.json().get("choices", [{}])[0].get("message", {}).get("content") or ""
+            s, e = text.find("["), text.rfind("]")
+            try:
+                arr = json.loads(text[s:e + 1]) if s != -1 and e != -1 else json.loads(text)
+            except json.JSONDecodeError:
+                log(f"OpenRouter unparseable answer from {model}: {text[:200]}")
+                break
+            out = [None] * len(items)
+            if isinstance(arr, list):
+                for item in arr:
+                    if not isinstance(item, dict):
+                        continue
+                    i = item.get("i")
+                    try:
+                        i = int(i)
+                    except (TypeError, ValueError):
+                        continue
+                    if 1 <= i <= len(items):
+                        t = item.get("text")
+                        out[i - 1] = str(t).strip() if t else None
+            return out
+    raise JobError(f"OpenRouter OCR failed for model {primary} (fallback {fallback}) after both attempts")
+
 DIFF_HI = 4.0      # mean change (0-255) of the subtitle band, at 320 px wide, that means "new text"
 DIFF_CELL = 12.0   # ...or this mean change in any 48 x 8 px cell (a short caption over a still picture)
 RECHECK = 10       # frames (5 s at 2 fps) after which a shown line is looked at again anyway
@@ -530,14 +594,21 @@ STILL_GAP = 20.0   # a caption box may hide the line this long without it counti
 STILL_SHARE = 0.35 # ...but it must be visible at least this share of the span
 
 
-def ocr(base, video, langs, crop, duration, on_progress):
+def ocr(base, video, langs, crop, duration, on_progress, engine="", key=None, primary=None, fallback=None):
     """Lines from the bottom `crop` of the frame, sampled twice a second; a frame is read only when the band
     changed, once per language in `langs` (overlapping boxes keep the surer reading). Lines over 60 % alike are one
     line; shorter than 0.7 s dropped; the same text within 2 s merged. Text behind the picture (a lecture's slides,
     a status bar, a list) is dropped: lines that stay in one place for 10 s+, and captions
     that are not centred (skipped when that leaves nothing)."""
+    use_openrouter = engine == "openrouter"
+    if use_openrouter:
+        if not key:
+            raise JobError("OpenRouter OCR: the user who queued this job has no API key set (Settings → Profile → OpenRouter OCR)")
+        if not primary or not fallback:
+            raise JobError("OpenRouter OCR: a primary and a fallback model must be set (Settings → Profile → OpenRouter OCR)")
     lang = langs[0]
-    need(base, "/ocr/health", "EasyOCR")
+    if not use_openrouter:
+        need(base, "/ocr/health", "EasyOCR")
     import io
     from PIL import Image
 
@@ -692,6 +763,20 @@ def ocr(base, video, langs, crop, duration, on_progress):
                 merged.append(c)
         return merged
 
+    if engine == "openrouter":
+        pending = []
+
+        def _flush_openrouter():
+            if not pending:
+                return
+            texts = openrouter_ocr_batch(pending, key, primary, fallback)
+            for (t, _), text in zip(pending, texts):
+                boxes = [{"bbox": [0.0, 0.0, float(ow), float(oh)], "text": text, "conf": 1.0}] if text else []
+                reads.append((t, boxes))
+            pending.clear()
+    else:
+        def _flush_openrouter():
+            return
     reads, last, since, i = [], None, 0, 0
     total = max(1, int(duration * 2))
     reported = time.time()
@@ -714,8 +799,17 @@ def ocr(base, video, langs, crop, duration, on_progress):
                 if d.mean() < DIFF_HI and d[:r * 8, :c * 8].reshape(r, 8, c, 8).mean(axis=(1, 3)).max() < DIFF_CELL:
                     continue
             last, since = g, 0
-            reads.append((t, read(frame)))
+            if engine == "openrouter":
+                buf = io.BytesIO()
+                Image.frombytes("RGB", (ow, oh), frame).save(buf, "JPEG", quality=90)
+                pending.append((t, buf.getvalue()))
+                if len(pending) >= OPENROUTER_BATCH:
+                    _flush_openrouter()
+            else:
+                reads.append((t, read(frame)))
     finally:
+        if engine == "openrouter":
+            _flush_openrouter()
         if p.poll() is None:
             p.kill()  # a stopped job must not leave the decoder running
     p.wait()
@@ -847,7 +941,9 @@ def process(job):
             step(1, label)
             with exclusive("ocr", 1, "Waiting for OCR (another video is being read)"):
                 step(1, label)
-                cues = ocr(base, video, langs, n.get("crop") or 0.35, duration, lambda f, label=label: step(1, label, f))
+                cues = ocr(base, video, langs, n.get("crop") or 0.35, duration, lambda f, label=label: step(1, label, f),
+                           engine=n.get("engine") or "easyocr", key=job.get("openrouter_key"),
+                           primary=job.get("openrouter_primary"), fallback=job.get("openrouter_fallback"))
             log(f"job {jid}: OCR found {len(cues)} {lang} lines")
             texts[nid] = (lang, cues)
             keep(lang, cues)

@@ -14,6 +14,7 @@ mod stream;
 mod transcode;
 mod tree;
 mod upscale;
+mod openrouter;
 mod narration;
 mod pipeline;
 mod util;

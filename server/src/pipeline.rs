@@ -138,6 +138,7 @@ pub fn validate(g: &Graph, langs: &[&str]) -> Result<Summary, String> {
             }
             "subtitle" | "translate" if !lang_ok => return Err(format!("{}: pick a language", n.kind)),
             "ocr" if !(n.crop == 0.0 || (0.05..=0.8).contains(&n.crop)) => return Err("OCR: the crop must be 5–80 % of the frame".into()),
+            "ocr" if !(n.engine.is_empty() || n.engine == "easyocr" || n.engine == "openrouter") => return Err("OCR: pick easyocr or openrouter as the engine".into()),
             "voice" if !matches!(n.engine.as_str(), "vieneu" | "edge") => return Err("voice: pick VieNeu or edge-tts".into()),
             "whisper" | "ocr" | "subtitle" | "translate" | "voice" | "mux" => {}
             k => return Err(format!("unknown node type {k:?}")),

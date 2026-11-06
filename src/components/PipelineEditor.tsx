@@ -180,6 +180,10 @@ export default function PipelineEditor(props: {
                   <Show when={n().type === "whisper"}>{langSelect(n(), true)}</Show>
                   <Show when={n().type === "subtitle" || n().type === "translate"}>{langSelect(n())}</Show>
                   <Show when={n().type === "ocr"}>
+                    <Select value={n().engine ?? "easyocr"} disabled={ro()} onChange={(v) => patch(n().id, { engine: v })} options={[
+                      { value: "easyocr", label: "EasyOCR" },
+                      { value: "openrouter", label: "OpenRouter OCR (free vision)" },
+                    ]} />
                     {/* Tags: every language read in the picture; the first is the subtitles' language. */}
                     <div class="pipe-tags">
                       <For each={ocrLangs(n())} fallback={<span class="muted small">No language yet</span>}>

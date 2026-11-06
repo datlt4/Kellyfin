@@ -441,6 +441,22 @@ async fn config(st: &AppState) -> Config {
     }
 }
 
+/// What the worker gets: the shared config, plus the OpenRouter key (never the browser view of `Overview`) and the
+/// chosen free models — only for jobs with an OpenRouter OCR node.
+#[derive(Serialize)]
+pub struct WorkerConfig {
+    voice_vi: String,
+    voice_zh: String,
+    lessons: String,
+    jobs: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    openrouter_key: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    openrouter_primary: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    openrouter_fallback: String,
+}
+
 async fn job_item(st: &AppState, id: i64) -> ApiResult<(i64, String, Vec<Value>)> {
     let (item, path, streams): (i64, String, Option<String>) = sqlx::query_as(
         "SELECT i.id, i.path, i.streams FROM narration_jobs j JOIN items i ON i.id = j.item_id WHERE j.id = ?",
@@ -517,8 +533,9 @@ pub struct Claimed {
     subs: HashMap<String, String>,
     /// A lesson with no video: the voice is made as an mp3 timeline of its own, line after line.
     audio_only: bool,
+    /// The job's user's encrypted OpenRouter key and chosen free models; `None`/`""` when not set or the node is not OpenRouter.
     #[serde(flatten)]
-    config: Config,
+    config: WorkerConfig,
 }
 
 /// Hands the worker the next queued job: the ones moved to the top first, then the oldest (204 when there is none).
@@ -541,13 +558,13 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
     .bind(&active)
     .execute(&st.db)
     .await?;
-    let Some((job_id, item_id, source, langs, graph)): Option<(i64, i64, String, String, Option<String>)> = sqlx::query_as(
+    let Some((job_id, item_id, source, langs, graph, job_user_id)): Option<(i64, i64, String, String, Option<String>, Option<i64>)> = sqlx::query_as(
         "UPDATE narration_jobs SET status = 'running', worker = ?1, stage = 0, step = 'starting', progress = 0, error = NULL,
            updated_at = ?2
          WHERE id = (SELECT id FROM narration_jobs
                      WHERE status = 'queued' OR (status = 'running' AND updated_at < ?3 AND COALESCE(worker, '') != ?1)
                      ORDER BY priority DESC, id LIMIT 1)
-         RETURNING id, item_id, source, langs, pipeline",
+         RETURNING id, item_id, source, langs, pipeline, user_id",
     )
     .bind(&worker)
     .bind(now)
@@ -571,7 +588,49 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
         Some(g) => g,
         None => legacy_graph(&source, &langs),
     };
-    Ok(Json(Claimed { job_id, item_id, title, duration, pipeline, subs, audio_only, config: config(&st).await }).into_response())
+    let needs_openrouter = pipeline.nodes.iter().any(|n| n.kind == "ocr" && n.engine == "openrouter");
+    let (or_key, or_primary, or_fallback): (Option<String>, String, String) = if needs_openrouter {
+        let (key, primary, fallback) = crate::openrouter::claim_input(&st, job_user_id).await?;
+        if key.is_none() {
+            sqlx::query("UPDATE narration_jobs SET status = 'failed', stage = 0, step = NULL, error = ?, updated_at = ? WHERE id = ?")
+                .bind("OpenRouter OCR: no API key set (Settings → Profile, OpenRouter). Either set your key, or switch the OCR engine on the voice node.")
+                .bind(util::now())
+                .bind(job_id)
+                .execute(&st.db)
+                .await?;
+            return Ok(StatusCode::NO_CONTENT.into_response());
+        }
+        // The model could have stopped being free since it was queued: double-check it is still on the free list.
+        match crate::openrouter::models().await {
+            Ok(models) => {
+                let both_free = models.iter().any(|m| m.id == primary) && models.iter().any(|m| m.id == fallback);
+                if !both_free {
+                    sqlx::query("UPDATE narration_jobs SET status = 'failed', stage = 0, step = NULL, error = ?, updated_at = ? WHERE id = ?")
+                        .bind(format!("OpenRouter OCR: model \"{primary}\" or \"{fallback}\" is no longer free (or not vision-capable). Pick a free one in Settings → Profile."))
+                        .bind(util::now())
+                        .bind(job_id)
+                        .execute(&st.db)
+                        .await?;
+                    return Ok(StatusCode::NO_CONTENT.into_response());
+                }
+            }
+            Err(e) => tracing::warn!("openrouter model list unavailable; proceeding with the queued models as-is: {e:#}"),
+        }
+        (key, primary, fallback)
+    } else {
+        (None, String::new(), String::new()) // no openrouter node: no key needed (and none leaked to the worker)
+    };
+    let base = config(&st).await;
+    Ok(Json(Claimed {
+        job_id,
+        item_id,
+        title,
+        duration,
+        pipeline,
+        subs,
+        audio_only,
+        config: WorkerConfig { voice_vi: base.voice_vi, voice_zh: base.voice_zh, lessons: base.lessons, jobs: base.jobs, openrouter_key: or_key, openrouter_primary: or_primary, openrouter_fallback: or_fallback },
+    }).into_response())
 }
 
 /// Jobs queued before pipelines (2.3.0): the Whisper preset with their spoken language and voices.
@@ -840,7 +899,7 @@ pub struct QueueResult {
 /// start (subtitles, translation, voices); one that is waiting, running or paused is left alone. A pipeline whose only
 /// source is a subtitle file skips (and counts in `skipped`) the items that have none of the subtitle languages it asks
 /// for — found the same way the claim finds them for the worker (external files beside the video, embedded text tracks).
-pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) -> ApiResult<Json<QueueResult>> {
+pub async fn queue(State(st): State<AppState>, a: Admin, Json(q): Json<Queue>) -> ApiResult<Json<QueueResult>> {
     let (name, graph) = preset(&st, q.preset.as_deref().unwrap_or("whisper")).await?;
     let summary = pipeline::validate(&graph, SUB_LANGS).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
     let graph_value = graph.clone();
@@ -877,10 +936,10 @@ pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) 
             }
         }
         added += sqlx::query(
-            "INSERT INTO narration_jobs (item_id, source, langs, preset, pipeline, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+            "INSERT INTO narration_jobs (item_id, source, langs, preset, pipeline, created_at, updated_at, user_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
              ON CONFLICT (item_id) DO UPDATE SET status = 'queued', source = excluded.source, langs = excluded.langs,
                preset = excluded.preset, pipeline = excluded.pipeline, stage = 0, step = NULL, progress = 0, error = NULL,
-               priority = 0, updated_at = excluded.updated_at
+               priority = 0, updated_at = excluded.updated_at, user_id = excluded.user_id
              WHERE narration_jobs.status IN ('failed', 'done')",
         )
         .bind(id)
@@ -889,6 +948,7 @@ pub async fn queue(State(st): State<AppState>, _a: Admin, Json(q): Json<Queue>) 
         .bind(&name)
         .bind(&graph)
         .bind(now)
+        .bind(a.0.id)
         .execute(&st.db)
         .await?
         .rows_affected();

@@ -23,7 +23,7 @@ pub struct User {
     pub is_admin: bool,
 }
 
-pub struct Admin;
+pub struct Admin(pub User);
 
 pub fn hash_password(p: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut OsRng);
@@ -99,7 +99,7 @@ impl FromRequestParts<AppState> for Admin {
         if !u.is_admin {
             return Err(ApiError::new(StatusCode::FORBIDDEN, "admin only"));
         }
-        Ok(Admin)
+        Ok(Admin(u))
     }
 }
 

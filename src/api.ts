@@ -90,6 +90,8 @@ export type PipeGraph = { nodes: PipeNode[]; edges: [string, string][] };
 export type Preset = { id: string; name: string; builtin: boolean; graph: PipeGraph };
 export type NarrationCheck = { name: string; ok: boolean; detail: string };
 export type NarrationInputCheck = { videos_without_input: string[]; subtitles_without_video: string[] };
+export type OpenRouterState = { enabled: boolean; key_set: boolean; primary_model: string; fallback_model: string };
+export type OpenRouterModel = { id: string; name: string; context: number };
 export type NarrationOverview = {
   config: NarrationConfig;
   token: string;

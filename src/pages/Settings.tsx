@@ -2,7 +2,7 @@ import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
 import {
   activeServer, api, ApiError, appVersion, fmtClock, img, isTauri, refreshUser, serverVersion, upload, user,
-  checkNarration, type Info, type Lib, type LibRow, type NarrationConfig, type NarrationInputCheck, type PipeGraph, type Preset, type NarrationOverview, type ScanStatus, type UpscaleOverview, type UserRow,
+  checkNarration, type Info, type Lib, type LibRow, type NarrationConfig, type NarrationInputCheck, type PipeGraph, type Preset, type NarrationOverview, type ScanStatus, type UpscaleOverview, type UserRow, type OpenRouterModel, type OpenRouterState,
 } from "../api";
 import FolderPicker from "../components/FolderPicker";
 import PipelineEditor from "../components/PipelineEditor";
@@ -48,6 +48,37 @@ function Profile() {
   const pwAct = useAction();
   const upAct = useAction();
   const avAct = useAction();
+
+  const orAct = useAction();
+  const [orState, { refetch: refetchOr }] = createResource(() => api<OpenRouterState>("/me/openrouter"));
+  const [orKey, setOrKey] = createSignal("");
+  const [orClear, setOrClear] = createSignal(false);
+  const [orPrimary, setOrPrimary] = createSignal("");
+  const [orFallback, setOrFallback] = createSignal("");
+  let filledOr = false;
+  createEffect(on(() => orState(), (s) => {
+    if (s && !filledOr) {
+      filledOr = true;
+      setOrPrimary(s.primary_model);
+      setOrFallback(s.fallback_model);
+    }
+  }));
+  const [orModels] = createResource(() => (orState()?.key_set ? api<OpenRouterModel[]>("/me/openrouter/models") : Promise.resolve<OpenRouterModel[]>([])));
+  const saveOr = (e: Event) => {
+    e.preventDefault();
+    orAct.run(async () => {
+      const body: Record<string, unknown> = {};
+      if (orClear()) body.clear_key = true;
+      else if (orKey().trim()) body.key = orKey().trim();
+      body.primary_model = orPrimary();
+      body.fallback_model = orFallback();
+      await api("/me/openrouter", { method: "PUT", body: JSON.stringify(body) });
+      setOrKey("");
+      setOrClear(false);
+      filledOr = false; // re-fill from server defaults
+      refetchOr();
+    }, "Saved");
+  };
   const changeAvatar = async () => {
     const f = await pickFile("image/*");
     if (f) avAct.run(async () => { await upload("/me/avatar", f); await refreshUser(); });
@@ -78,6 +109,36 @@ function Profile() {
           </div>
           <avAct.Note />
         </div>
+      </section>
+      <section class="panel">
+        <h2>OpenRouter OCR</h2>
+        <p class="muted small">Your API key powers the OpenRouter OCR engine (free vision models) for videos without subtitles. Each user sets their own key; it is encrypted on the server before being stored and never leaves it in clear text. Only free models are listed.</p>
+        <Show when={!orState()}><p class="muted small">Loading…</p></Show>
+        <Show when={orState()}>
+          <Show when={!orState()!.enabled}><p class="error small">The server does not have <code>KELLYFIN_OPENROUTER_SECRET</code> set; your admin needs to add it to the server .env first.</p></Show>
+          <Show when={orState()!.enabled}>
+            <Show when={orState()!.key_set} fallback={<p class="muted small">No API key set yet — paste yours below to enable OpenRouter OCR.</p>}><p class="muted small">A key is stored (encrypted).</p></Show>
+            <form class="form" onSubmit={saveOr}>
+              <label>API key
+                <input type="password" value={orKey()} onInput={(e) => setOrKey(e.currentTarget.value)} placeholder="sk-or-v1-…" autocomplete="off" />
+              </label>
+              <label class="check"><input type="checkbox" checked={orClear()} onChange={(e) => setOrClear(e.currentTarget.checked)} disabled={!orState()!.key_set} />Remove stored key</label>
+              <label>Primary model
+                <Show when={orModels() && orModels()!.length} fallback={<select class="sel"><option>No models loaded yet (needs a stored key)</option></select>}>
+                  <Select value={orPrimary()} onChange={setOrPrimary} options={orModels()!.map((m) => ({ value: m.id, label: m.name }))} />
+                </Show>
+              </label>
+              <label>Fallback model
+                <Show when={orModels() && orModels()!.length} fallback={<select class="sel"><option>—</option></select>}>
+                  <Select value={orFallback()} onChange={setOrFallback} options={orModels()!.map((m) => ({ value: m.id, label: m.name }))} />
+                </Show>
+              </label>
+              <p class="muted small">Embeddings and paid models are hidden. The claim re-checks the primary and fallback are free before the worker starts — if either has stopped being free, the job fails with a clear error instead of charging you.</p>
+              <div class="row-btns"><button type="submit" class="btn primary">Save</button></div>
+            </form>
+            <orAct.Note />
+          </Show>
+        </Show>
       </section>
       <section class="panel">
         <h2>About</h2>

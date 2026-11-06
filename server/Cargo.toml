@@ -1,6 +1,6 @@
 [package]
 name = "kellyfin-server"
-version = "2.12.0"
+version = "2.13.0"
 edition = "2021"
 license = "MIT"
 
@@ -10,6 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+aes-gcm = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
 argon2 = "0.5"
 axum = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

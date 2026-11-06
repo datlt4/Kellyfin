@@ -1,7 +1,7 @@
 use crate::{
     auth::{self, Admin, User},
     error::{ApiError, ApiResult},
-    admin, narration, recommend, repair, scan, settings, stream, transcode, upscale, AppState,
+    admin, narration, openrouter, recommend, repair, scan, settings, stream, transcode, upscale, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -29,6 +29,8 @@ pub fn router(st: AppState) -> Router {
         .route("/me", get(admin::me))
         .route("/me/password", post(admin::change_password))
         .route("/me/avatar", put(admin::set_avatar).delete(admin::delete_avatar))
+        .route("/me/openrouter", get(openrouter::get_me).put(openrouter::put_me).delete(openrouter::delete_me))
+        .route("/me/openrouter/models", get(openrouter::models_me))
         .route("/search", get(recommend::search))
         .route("/items/{id}/related", get(recommend::related))
         .route("/home", get(home))
