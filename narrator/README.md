@@ -14,7 +14,7 @@ Whisper" and "Default · OCR"; duplicate one to make your own), in four stages s
 2. **Translation** with Argos / LibreTranslate into the languages the graph asks for. A job always redoes every
    step: subtitles, translation and voices of an earlier run are replaced (the `<video>.<lang>.srt` files and the
    narration tracks), only a **subtitle** node reads the video's own subtitles;
-3. **Voice**: VieNeu-TTS reads Vietnamese, edge-tts any language (edge-tts is a Microsoft service: needs Internet);
+3. **Voice**: VieNeu-TTS reads Vietnamese, edge-tts any language (edge-tts is a Microsoft service: needs Internet; a line it cannot make — Microsoft throttles or drops connections — is read by **Google Translate TTS** instead, and a job whose probe fails goes wholly to Google; 20 s timeout per edge-tts line);
 4. **Mux**, on the Kellyfin server: the voice over the original sound, which ducks while the voice speaks. The worker
    hands the voice over and takes the next video meanwhile.
 

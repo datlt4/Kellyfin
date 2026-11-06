@@ -47,8 +47,43 @@ EDGE_PARALLEL = int(os.environ.get("EDGE_TTS_PARALLEL", "12"))
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL") or "medium"  # baked into the Whisper image: tiny, small, medium
 WHISPER_TIMEOUT = int(os.environ.get("WHISPER_TIMEOUT") or 4 * 3600)  # seconds per video (a CPU takes long)
 EDGE_RETRIES = int(os.environ.get("EDGE_TTS_RETRIES") or 3)  # more rounds over the lines edge-tts failed on, after the first pass
+EDGE_TIMEOUT = int(os.environ.get("EDGE_TTS_TIMEOUT") or 20)  # seconds per line; a line Microsoft holds open forever is failed, not hung
 WORKER_JOBS = int(os.environ.get("WORKER_JOBS") or 3)  # hard cap on videos worked on at once; Kellyfin's Settings → Narration sets the actual limit (default: one at a time)
 SR = 48000
+
+# Google Translate TTS (client=tw-ob, 200 chars a request): the stand-in when Microsoft throttles or drops edge-tts.
+GOOGLE_TTS = "https://translate.google.com/translate_tts"
+GOOGLE_MAX = 200
+GOOGLE_TL = {"vi": "vi", "zh": "zh-CN", "en": "en", "ja": "ja", "ko": "ko", "de": "de", "fr": "fr", "es": "es", "it": "it", "pt": "pt", "ru": "ru", "th": "th", "id": "id", "ms": "ms"}
+GOOGLE_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
+
+def synth_google(text, tl, out):
+    """One line via Google Translate TTS, in pieces of at most 200 chars joined onto one mp3. Raises JobError on failure."""
+    pieces = [text]
+    if len(text) > GOOGLE_MAX:
+        pieces, cur = [], ""
+        for word in text.split(" "):
+            piece = f"{cur} {word}".strip()
+            if len(piece) > GOOGLE_MAX:
+                pieces.append(cur)
+                cur = word
+            else:
+                cur = piece
+        pieces.append(cur)
+    with open(out, "wb") as f:
+        for piece in pieces:
+            for attempt in (1, 2, 3):
+                r = requests.get(GOOGLE_TTS, params={"ie": "UTF-8", "client": "tw-ob", "tl": GOOGLE_TL.get(tl, tl), "q": piece},
+                                 headers={"User-Agent": GOOGLE_UA}, timeout=30)
+                if r.status_code == 200 and r.content:
+                    f.write(r.content)
+                    break
+                time.sleep([1, 4, 10][attempt - 1])
+            else:
+                raise JobError(f"google-tts failed on: {piece[:40]}")
+    if os.path.getsize(out) == 0:
+        raise JobError("google-tts gave no audio")
 
 # One video at a time in each of these (they are heavy), so while one video is read aloud (edge-tts, mostly waiting
 # for the Internet) the next can already be in OCR, Whisper or translation.
@@ -342,15 +377,24 @@ def sentences(cues, limit=350):
     return out
 
 
-def tts_edge(cues, voice, duration, dest, tmp, on_progress, sequential=False):
+def tts_edge(cues, voice, duration, dest, tmp, on_progress, sequential=False, tl="vi"):
     """edge-tts per line, each placed at its start on one timeline; `sequential`: one line after the other (an audio
-    lesson has no picture to keep time with), so a line is never cut or laid over the next."""
+    lesson has no picture to keep time with), so a line is never cut or laid over the next. A line edge-tts cannot make
+    (Microsoft throttles/drops connections) is read with Google Translate TTS instead; if the edge-tts probe itself does
+    not answer, the whole job is read with Google TTS rather than failed."""
     import edge_tts
 
-    async def synth(text, out):
+    google = [False]  # the probe failed: read every line with Google TTS
+    google_n = [0]
+
+    async def synth(text, out, fallback=True):
+        if google[0]:
+            await asyncio.to_thread(synth_google, text, tl, out)
+            google_n[0] += 1
+            return
         for attempt in (1, 2, 3):
             try:
-                await edge_tts.Communicate(text, voice).save(out)
+                await asyncio.wait_for(edge_tts.Communicate(text, voice).save(out), EDGE_TIMEOUT)
                 return
             except Exception:
                 await asyncio.sleep(3 * attempt)
@@ -359,13 +403,22 @@ def tts_edge(cues, voice, duration, dest, tmp, on_progress, sequential=False):
             os.unlink(out)
         except OSError:
             pass
+        # edge-tts could not make this line (throttled or dropped): read it with Google TTS instead.
+        if fallback:
+            try:
+                synth_google(text, tl, out)
+                google_n[0] += 1
+                return
+            except JobError:
+                pass
         raise JobError(f"edge-tts failed on: {text[:40]}")
 
     probe = os.path.join(tmp, "probe.mp3")
     try:
-        asyncio.run(synth("1", probe))
+        asyncio.run(synth("1", probe, fallback=False))
     except Exception as e:
-        raise JobError(f"edge-tts does not answer (it needs Internet access): {e}") from e
+        log(f"edge-tts does not answer ({e}); reading the whole job with Google TTS")
+        google[0] = True
     voice_dir = os.path.join(tmp, f"voice-{uuid.uuid4().hex[:8]}")
     os.makedirs(voice_dir, exist_ok=True)
     done, failed = [0], []
@@ -405,6 +458,8 @@ def tts_edge(cues, voice, duration, dest, tmp, on_progress, sequential=False):
         failed.extend(t for _, t in left)  # one odd line stays silent rather than failing the video
 
     asyncio.run(all_cues())
+    if google_n[0]:
+        log(f"edge-tts: {google_n[0]} of {len(todo)} lines read by Google TTS")
     if len(failed) > max(3, len(todo) // 10):
         raise JobError(f"edge-tts failed on {len(failed)} of {len(todo)} lines, e.g. {failed[0][:40]!r}")
     if failed:
@@ -846,7 +901,7 @@ def process(job):
                 label = f"Reading {lang} aloud as audio (edge-tts {voice})"
                 step(3, label)
                 mp3 = os.path.join(tmp, f"{lang}.podcast.mp3")
-                tts_edge(cues, voice, duration, mp3, tmp, lambda f, label=label: step(3, label, f), sequential=True)
+                tts_edge(cues, voice, duration, mp3, tmp, lambda f, label=label: step(3, label, f), sequential=True, tl=lang)
                 kf_upload(jid, f"{lang}.podcast.mp3", mp3)
                 log(f"job {jid}: {lang} audio uploaded ({os.path.getsize(mp3) >> 20} MB)")
                 done[3] += 1
@@ -864,7 +919,7 @@ def process(job):
                     raise JobError(f"no edge-tts voice for {lang}: set one on the voice node")
                 label = f"Reading {lang} aloud (edge-tts {voice})"
                 step(3, label)
-                tts_edge(cues, voice, duration, wav, tmp, lambda f, label=label: step(3, label, f))
+                tts_edge(cues, voice, duration, wav, tmp, lambda f, label=label: step(3, label, f), tl=lang)
             flac = os.path.join(tmp, f"{lang}.voice.flac")
             to_flac(wav, flac)
             kf_upload(jid, f"{lang}.voice.flac", flac)
