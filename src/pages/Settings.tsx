@@ -63,7 +63,11 @@ function Profile() {
       setOrFallback(s.fallback_model);
     }
   }));
-  const [orModels] = createResource(() => (orState()?.key_set ? api<OpenRouterModel[]>("/me/openrouter/models") : Promise.resolve<OpenRouterModel[]>([])));
+  // (source, fetcher): re-runs whenever key_set flips — a fresh page or a just-saved key re-loads the list.
+  const [orModels, { refetch: refetchOrModels }] = createResource(
+    () => orState()?.key_set ?? false,
+    (keyed) => (keyed ? api<OpenRouterModel[]>("/me/openrouter/models") : Promise.resolve<OpenRouterModel[]>([])),
+  );
   const saveOr = (e: Event) => {
     e.preventDefault();
     orAct.run(async () => {
@@ -77,6 +81,7 @@ function Profile() {
       setOrClear(false);
       filledOr = false; // re-fill from server defaults
       refetchOr();
+      refetchOrModels();
     }, "Saved");
   };
   const changeAvatar = async () => {
@@ -124,14 +129,20 @@ function Profile() {
               </label>
               <label class="check"><input type="checkbox" checked={orClear()} onChange={(e) => setOrClear(e.currentTarget.checked)} disabled={!orState()!.key_set} />Remove stored key</label>
               <label>Primary model
-                <Show when={orModels() && orModels()!.length} fallback={<select class="sel"><option>No models loaded yet (needs a stored key)</option></select>}>
-                  <Select value={orPrimary()} onChange={setOrPrimary} options={orModels()!.map((m) => ({ value: m.id, label: m.name }))} />
-                </Show>
+                <Show when={orModels.loading} fallback={
+                  <Show when={orModels() && orModels()!.length} fallback={
+                    <select class="sel"><option>{orModels.error ? "Could not load the free models — see the server log" : "No models loaded yet (needs a stored key)"}</option></select>
+                  }>
+                    <Select value={orPrimary()} onChange={setOrPrimary} options={orModels()!.map((m) => ({ value: m.id, label: m.name }))} />
+                  </Show>
+                }><select class="sel"><option>Loading the free models…</option></select></Show>
               </label>
               <label>Fallback model
-                <Show when={orModels() && orModels()!.length} fallback={<select class="sel"><option>—</option></select>}>
-                  <Select value={orFallback()} onChange={setOrFallback} options={orModels()!.map((m) => ({ value: m.id, label: m.name }))} />
-                </Show>
+                <Show when={orModels.loading} fallback={
+                  <Show when={orModels() && orModels()!.length} fallback={<select class="sel"><option>—</option></select>}>
+                    <Select value={orFallback()} onChange={setOrFallback} options={orModels()!.map((m) => ({ value: m.id, label: m.name }))} />
+                  </Show>
+                }><select class="sel"><option>Loading…</option></select></Show>
               </label>
               <p class="muted small">Embeddings and paid models are hidden. The claim re-checks the primary and fallback are free before the worker starts — if either has stopped being free, the job fails with a clear error instead of charging you.</p>
               <div class="row-btns"><button type="submit" class="btn primary">Save</button></div>
