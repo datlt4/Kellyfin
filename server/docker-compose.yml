@@ -26,6 +26,7 @@ services:
       - "${KELLYFIN_PORT:-8024}:8080"
     environment:
       KELLYFIN_ADMIN_PASSWORD: ${KELLYFIN_ADMIN_PASSWORD:-}
+      KELLYFIN_OPENROUTER_SECRET: ${KELLYFIN_OPENROUTER_SECRET:-}
     volumes:
       - /mnt/das_8tb/kellyfin_volume/data:/data
       - /mnt/das_8tb/jellyfin_volume/media:/media

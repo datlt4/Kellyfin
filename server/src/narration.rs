@@ -228,6 +228,11 @@ async fn embed(st: &AppState, id: i64) -> anyhow::Result<()> {
         if a.is_none() {
             cmd.arg("-shortest");
         }
+        // Clamp the output to the item's video: the voice is padded with endless silence and `-shortest` does not
+        // cut a stream-copied video, so without this the muxed file ran long and the check below failed the job.
+        if let Some(d) = duration {
+            cmd.args(["-t", &format!("{d}")]);
+        }
         let out = cmd.arg(&tmp).kill_on_drop(true).output().await?;
         if !out.status.success() {
             let _ = tokio::fs::remove_file(&tmp).await;
