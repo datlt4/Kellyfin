@@ -221,3 +221,25 @@ pub async fn delete_me(State(st): State<AppState>, user: User) -> ApiResult<Stat
     delete(&st, user.id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// How many free-model requests the key still has today (OpenRouter counts them per account, all free models together).
+/// `None` when OpenRouter does not answer or the key is not valid — the claim then fails open.
+pub async fn free_remaining(key: &str) -> Option<u64> {
+    let client = reqwest::Client::new();
+    let resp = client.get("https://openrouter.ai/api/v1/auth/key")
+        .header("Authorization", format!("Bearer {key}"))
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    let q = &body["data"]["free_model_daily_requests"];
+    if let Some(r) = q["remaining"].as_u64() {
+        return Some(r);
+    }
+    let (used, limit) = (q["used"].as_u64()?, q["limit"].as_u64()?);
+    Some(limit.saturating_sub(used))
+}

@@ -555,9 +555,8 @@ def openrouter_ocr_batch(items, key, primary, fallback):
                 log(f"OpenRouter request failed ({model}): {e}")
                 break
             if r.status_code == 429:
-                log(f"OpenRouter rate limit on {model}; holding the batch for 45 s")
-                time.sleep(45)
-                continue
+                log(f"OpenRouter rate limit on {model} (the free daily allowance is shared across all free models)")
+                break
             try:
                 r.raise_for_status()
             except requests.HTTPError:
@@ -584,7 +583,7 @@ def openrouter_ocr_batch(items, key, primary, fallback):
                         t = item.get("text")
                         out[i - 1] = str(t).strip() if t else None
             return out
-    raise JobError(f"OpenRouter OCR failed for model {primary} (fallback {fallback}) after both attempts")
+    raise JobError(f"OpenRouter OCR failed for {primary} and {fallback}. The most likely cause is that the key's free-model allowance for today is used up (1000 free requests/day, shared across all free models) — wait for the daily reset or add credits to the OpenRouter account.")
 
 DIFF_HI = 4.0      # mean change (0-255) of the subtitle band, at 320 px wide, that means "new text"
 DIFF_CELL = 12.0   # ...or this mean change in any 48 x 8 px cell (a short caption over a still picture)

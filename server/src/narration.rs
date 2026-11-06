@@ -608,6 +608,18 @@ pub async fn claim(State(st): State<AppState>, headers: HeaderMap, Json(h): Json
                 .await?;
             return Ok(StatusCode::NO_CONTENT.into_response());
         }
+        // The key's free-model daily allowance is shared across all free models: don't start the job when it is spent.
+        if let Some(key) = key.as_deref() {
+            if crate::openrouter::free_remaining(key).await == Some(0) {
+                sqlx::query("UPDATE narration_jobs SET status = 'failed', stage = 0, step = NULL, error = ?, updated_at = ? WHERE id = ?")
+                    .bind("OpenRouter OCR: your key's free-model allowance for today is used up (1000 free requests/day, shared across all free models). The limit resets daily — wait, or add credits to your OpenRouter account.")
+                    .bind(util::now())
+                    .bind(job_id)
+                    .execute(&st.db)
+                    .await?;
+                return Ok(StatusCode::NO_CONTENT.into_response());
+            }
+        }
         // The model could have stopped being free since it was queued: double-check it is still on the free list.
         match crate::openrouter::models().await {
             Ok(models) => {
