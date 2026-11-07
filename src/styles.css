@@ -136,7 +136,11 @@ select, input {
 .tree-head .muted.small { font-size: 13px; flex: none; }
 .tree-head .chevron { display: inline-flex; flex: none; color: var(--muted); transition: transform 0.15s; }
 .tree-head .chevron.open { transform: rotate(90deg); }
-.row-item { display: flex; align-items: center; gap: 14px; padding: 8px 0; border-top: 1px solid var(--line); content-visibility: auto; contain-intrinsic-size: auto 84px; }
+/* No content-visibility anywhere in these scrolling views: WebKit (the macOS app's WKWebView) sometimes paints a
+   card that was skipped off-screen at a stale offset and at its intrinsic width, leaving a big blank row in the tree
+   and moving the card far below its folder (2.19.0). The lists are paginated (120) or a single library, so skipping
+   paint buys little. */
+.row-item { display: flex; align-items: center; gap: 14px; padding: 8px 0; border-top: 1px solid var(--line); }
 .row-item .thumb { width: 120px; flex: none; }
 .row-item .row-text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .badge.static { position: static; flex: none; }
@@ -211,7 +215,7 @@ main { padding-bottom: 48px; }
 .eyebrow { color: var(--accent-2); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }
 
 /* Shelves */
-.row { margin-top: 28px; content-visibility: auto; contain-intrinsic-size: auto 260px; }
+.row { margin-top: 28px; }
 .row-head { display: flex; align-items: center; justify-content: space-between; padding: 0 var(--gutter); margin-bottom: 6px; }
 .row-head h2 { font-size: 19px; }
 .row-nav button {
@@ -285,7 +289,6 @@ main { padding-bottom: 48px; }
   gap: 22px 14px;
   padding: 0 var(--gutter);
 }
-.grid > .card { content-visibility: auto; contain-intrinsic-size: auto 200px; }
 .sentinel { height: 1px; }
 
 /* Detail */
