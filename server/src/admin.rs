@@ -1,6 +1,6 @@
 //! Dashboard, users, libraries, item metadata and the user's own profile.
 use crate::{
-    auth::{hash_password, Admin, User},
+    auth::{hash_password, strong_enough, Admin, User},
     error::{ApiError, ApiResult},
     images, manifest, transcode, util, AppState,
 };
@@ -21,10 +21,28 @@ fn bad(msg: &str) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, msg)
 }
 
+/// True for PNG, JPEG, GIF, WebP, BMP and HEIF/HEIC (`ftyp`); everything else
+/// (notably executables and archives) is rejected before ffmpeg ever sees it.
+fn sniff_image(body: &[u8]) -> bool {
+    if body.len() < 12 {
+        return false;
+    }
+    body.starts_with(b"\x89PNG")
+        || body.starts_with(b"\xff\xd8\xff")
+        || body.starts_with(b"GIF87a")
+        || body.starts_with(b"GIF89a")
+        || body.starts_with(b"BM")
+        || (body.starts_with(b"RIFF") && &body[8..12] == b"WEBP")
+        || &body[4..8] == b"ftyp"
+}
+
 /// Writes an uploaded image to a temp file and renders it into `kind/id`; returns the average color.
 async fn store_image(st: &AppState, kind: &str, id: i64, body: Bytes) -> ApiResult<String> {
     if body.is_empty() {
         return Err(bad("empty image"));
+    }
+    if !sniff_image(&body) {
+        return Err(bad("not a supported image (PNG, JPEG, GIF, WebP, BMP, HEIC)"));
     }
     let tmp = st.cfg.data.join(format!("upload-{}", util::random_hex(8)));
     tokio::fs::write(&tmp, &body).await.map_err(anyhow::Error::from)?;
@@ -193,6 +211,9 @@ pub async fn create_user(State(st): State<AppState>, _a: Admin, Json(u): Json<Ne
     if name.is_empty() || u.password.is_empty() {
         return Err(bad("name and password are required"));
     }
+    if !strong_enough(&u.password) {
+        return Err(bad("password must be at least 8 characters"));
+    }
     let r = sqlx::query("INSERT INTO users (name, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)")
         .bind(name)
         .bind(hash_password(&u.password)?)
@@ -217,8 +238,13 @@ pub async fn update_user(State(st): State<AppState>, _a: Admin, me: User, Path(i
         return Err(bad("you cannot remove your own admin rights"));
     }
     if let Some(pw) = p.password.filter(|p| !p.is_empty()) {
+        if !strong_enough(&pw) {
+            return Err(bad("password must be at least 8 characters"));
+        }
         sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?").bind(hash_password(&pw)?).bind(id).execute(&st.db).await?;
-        sqlx::query("DELETE FROM sessions WHERE user_id = ? AND user_id != ?").bind(id).bind(me.id).execute(&st.db).await?;
+        // Every session of this user dies with the old password (including this
+        // admin's own, when resetting themselves: they simply log in again).
+        sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(id).execute(&st.db).await?;
     }
     if let Some(a) = p.is_admin {
         sqlx::query("UPDATE users SET is_admin = ? WHERE id = ?").bind(a).bind(id).execute(&st.db).await?;
@@ -258,8 +284,8 @@ pub struct PasswordChange {
 }
 
 pub async fn change_password(State(st): State<AppState>, u: User, Json(p): Json<PasswordChange>) -> ApiResult<StatusCode> {
-    if p.new.is_empty() {
-        return Err(bad("new password is empty"));
+    if !strong_enough(&p.new) {
+        return Err(bad("new password must be at least 8 characters"));
     }
     let hash: Option<String> = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = ?").bind(u.id).fetch_one(&st.db).await?;
     let ok = hash.is_some_and(|h| crate::auth::verify_password(&h, &p.current));
@@ -267,6 +293,8 @@ pub async fn change_password(State(st): State<AppState>, u: User, Json(p): Json<
         return Err(bad("current password is wrong"));
     }
     sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?").bind(hash_password(&p.new)?).bind(u.id).execute(&st.db).await?;
+    // The password changed: all sessions (this one included) are revoked.
+    sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(u.id).execute(&st.db).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -319,9 +347,30 @@ pub struct LibBody {
     paths: Option<Vec<String>>,
 }
 
+/// A library root must be absolute, contain no `..`, and stay out of the
+/// OS itself: a library pointing at `/`, `/proc` or `/etc` would make the
+/// scanner walk (and then serve) the whole machine.
+pub fn valid_root(p: &str) -> bool {
+    if !p.starts_with('/') || p.contains("/../") || p.ends_with("/..") || p == "/.." || p == "/" {
+        return false;
+    }
+    for bad in ["/proc", "/sys", "/dev", "/etc", "/root", "/run", "/var/run", "/boot", "/var/log"] {
+        if p == bad || p.starts_with(&format!("{bad}/")) {
+            return false;
+        }
+    }
+    if let Ok(canon) = std::fs::canonicalize(p) {
+        let c = canon.to_string_lossy();
+        if ["/proc", "/sys", "/dev", "/etc"].iter().any(|b| c == *b || c.starts_with(&format!("{b}/"))) {
+            return false;
+        }
+    }
+    true
+}
+
 async fn set_paths(st: &AppState, id: i64, paths: &[String]) -> ApiResult<()> {
-    if paths.is_empty() || paths.iter().any(|p| !p.starts_with('/')) {
-        return Err(bad("add at least one absolute folder path"));
+    if paths.is_empty() || paths.iter().any(|p| !valid_root(p)) {
+        return Err(bad("add at least one absolute folder path outside the OS itself"));
     }
     let mut tx = st.db.begin().await?;
     sqlx::query("DELETE FROM library_paths WHERE library_id = ?").bind(id).execute(&mut *tx).await?;

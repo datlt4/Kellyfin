@@ -1,11 +1,11 @@
 use crate::{
     auth::{self, Admin, User},
     error::{ApiError, ApiResult},
-    admin, narration, openrouter, recommend, repair, scan, settings, stream, transcode, upscale, AppState,
+    admin, images, narration, openrouter, recommend, repair, scan, settings, stream, transcode, upscale, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderValue, Method, StatusCode},
     extract::DefaultBodyLimit,
     routing::{delete, get, patch, post, put},
     Json, Router,
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::{
     compression::CompressionLayer,
-    cors::CorsLayer,
+    cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
 };
@@ -87,12 +87,12 @@ pub fn router(st: AppState) -> Router {
         .route("/items/{id}/keyframe", get(stream::keyframe))
         .route("/speedtest", get(stream::speedtest))
         .route("/items/{id}/upscaled/{model}", get(upscale::play))
-        // GPU workers (upscaler/): results are whole video files, so no body limit.
+        // GPU workers (upscaler/): results are whole video files, capped at 32 GiB.
         .route("/upscaler/claim", post(upscale::claim))
         .route("/upscaler/jobs/{id}/source", get(upscale::source))
         .route("/upscaler/jobs/{id}/progress", post(upscale::progress))
         .route("/upscaler/jobs/{id}/fail", post(upscale::fail))
-        .route("/upscaler/jobs/{id}/result", put(upscale::result).layer(DefaultBodyLimit::disable()))
+        .route("/upscaler/jobs/{id}/result", put(upscale::result).layer(DefaultBodyLimit::max(32 << 30)))
         // Narration worker (narrator/, next to the film-sub services).
         .route("/narrator/claim", post(narration::claim))
         .route("/narrator/jobs/{id}/audio", get(narration::audio))
@@ -100,16 +100,33 @@ pub fn router(st: AppState) -> Router {
         .route("/narrator/jobs/{id}/subtitle/{key}", get(narration::subtitle))
         .route("/narrator/jobs/{id}/progress", post(narration::progress))
         .route("/narrator/jobs/{id}/fail", post(narration::fail))
-        .route("/narrator/jobs/{id}/files/{name}", put(narration::upload).layer(DefaultBodyLimit::disable()))
+        .route("/narrator/jobs/{id}/files/{name}", put(narration::upload).layer(DefaultBodyLimit::max(512 << 20)))
         .route("/narrator/jobs/{id}/done", post(narration::done))
         .route("/items/{id}/hls/{p}/{audio}/{file}", get(transcode::hls_file));
-    let api = api.merge(media).layer(CorsLayer::permissive());
+    // Same-origin web UI needs no CORS at all; the native apps (tauri://,
+    // capacitor://, loopback dev servers) do. Anything else gets no
+    // Access-Control-Allow-Origin, so a stray origin cannot read responses.
+    let cors = CorsLayer::new()
+        .allow_methods(AllowMethods::list([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS]))
+        .allow_headers(AllowHeaders::list([header::AUTHORIZATION, header::CONTENT_TYPE, header::RANGE]))
+        .allow_origin(AllowOrigin::predicate(|origin, _| {
+            let o = origin.as_bytes();
+            o.starts_with(b"tauri://")
+                || o.starts_with(b"capacitor://")
+                || o.starts_with(b"http://localhost")
+                || o.starts_with(b"http://127.0.0.1")
+                || o.starts_with(b"http://tauri.")
+                || o.starts_with(b"https://tauri.")
+        }));
+    let api = api.merge(media).layer(cors);
 
-    // Image URLs carry ?v=<version>, so they can be cached forever.
-    let img = ServeDir::new(&st.images);
-    let mut app = Router::new()
-        .nest("/api", api)
-        .nest_service("/img", tower::ServiceBuilder::new().layer(SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, IMMUTABLE)).service(img));
+    // Thumbnails carry ?v=<version> and the session ?t=<token> (<img> cannot
+    // send headers), and require a login: unlike the old public /img tree,
+    // IDs can no longer be enumerated anonymously.
+    let img_routes = Router::new()
+        .route("/img/{*path}", get(images::file))
+        .layer(SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, IMMUTABLE));
+    let mut app = Router::new().nest("/api", api).merge(img_routes);
 
     if let Some(web) = &st.cfg.web {
         let assets = ServeDir::new(web.join("assets"));

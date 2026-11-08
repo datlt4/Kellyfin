@@ -128,9 +128,11 @@ pub async fn collect(db: &SqlitePool, images_dir: &Path, out: Option<&Path>) -> 
             .collect();
         m.libraries.push(Library { image: copy("lib", id), name, kind, paths, items });
     }
-    let users: Vec<(i64, String, bool, Option<String>)> =
-        sqlx::query_as("SELECT id, name, is_admin, password_hash FROM users").fetch_all(db).await?;
-    for (id, name, is_admin, password_hash) in users {
+    // Password hashes never travel with an export: the file is routinely copied
+    // around, and a hash leak is an offline-crack invitation.
+    let users: Vec<(i64, String, bool)> =
+        sqlx::query_as("SELECT id, name, is_admin FROM users").fetch_all(db).await?;
+    for (id, name, is_admin) in users {
         let rows: Vec<(String, f64, bool, bool, Option<i64>)> = sqlx::query_as(
             "SELECT i.path, d.position, d.played, d.favorite, d.last_played
              FROM user_data d JOIN items i ON i.id = d.item_id WHERE d.user_id = ?",
@@ -142,7 +144,7 @@ pub async fn collect(db: &SqlitePool, images_dir: &Path, out: Option<&Path>) -> 
             .into_iter()
             .map(|(path, position, played, favorite, last_played)| UserData { path, position, played, favorite, last_played })
             .collect();
-        m.users.push(User { name, is_admin, password_hash, user_data });
+        m.users.push(User { name, is_admin, password_hash: None, user_data });
     }
     Ok(m)
 }
@@ -154,6 +156,21 @@ pub async fn export(db: &SqlitePool, images_dir: &Path, out: &Path) -> anyhow::R
 pub async fn import_dir(db: &SqlitePool, images_dir: &Path, dir: &Path, map: &PathMap) -> anyhow::Result<()> {
     let m: Manifest = serde_json::from_slice(&tokio::fs::read(dir.join("manifest.json")).await.context("read manifest.json")?)?;
     import(db, images_dir, &m, Some(dir), map).await
+}
+
+/// Image refs inside a manifest: strictly `images/...` relative paths, so a
+/// crafted manifest cannot make the importer read `/etc/passwd` or similar.
+fn valid_image_ref(img: &str) -> bool {
+    img.starts_with("images/") && !img.contains("..") && Path::new(img).is_relative()
+}
+
+/// A manifest item path must be absolute and `..`-free, and live under one of
+/// the library's own (mapped) roots: otherwise a planted row turns
+/// `/items/{id}/file` into an arbitrary file read.
+fn check_item_path(roots: &[String], path: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(path.starts_with('/') && !path.contains("/../") && !path.ends_with("/.."), "bad item path: {path}");
+    anyhow::ensure!(roots.iter().any(|r| path == r || path.starts_with(&format!("{r}/"))), "item outside its library: {path}");
+    Ok(())
 }
 
 /// Applies a manifest; image refs are resolved against `dir` (none when imported from the web UI).
@@ -175,15 +192,18 @@ pub async fn import(db: &SqlitePool, images_dir: &Path, m: &Manifest, dir: Optio
         .fetch_one(db)
         .await?;
         let mut tx = db.begin().await?;
-        for p in &lib.paths {
+        let roots: Vec<String> = lib.paths.iter().map(|p| map.apply(p)).collect();
+        for p in &roots {
+            anyhow::ensure!(crate::admin::valid_root(p), "bad library path in manifest: {p}");
             sqlx::query("INSERT OR IGNORE INTO library_paths (library_id, path) VALUES (?, ?)")
                 .bind(lib_id)
-                .bind(map.apply(p))
+                .bind(p)
                 .execute(&mut *tx)
                 .await?;
         }
         for it in &lib.items {
             let path = map.apply(&it.path);
+            check_item_path(&roots, &path)?;
             let title = it.title.clone().unwrap_or_else(|| util::file_stem(&path));
             let id: i64 = sqlx::query_scalar(
                 "INSERT INTO items (library_id, path, title, title_locked, sort_title, added_at) VALUES (?, ?, ?, ?, ?, ?)
@@ -200,11 +220,13 @@ pub async fn import(db: &SqlitePool, images_dir: &Path, m: &Manifest, dir: Optio
             .fetch_one(&mut *tx)
             .await?;
             if let (Some(img), Some(dir)) = (&it.image, dir) {
+                anyhow::ensure!(valid_image_ref(img), "bad image ref in manifest: {img}");
                 renders.push(("item", id, dir.join(img)));
             }
         }
         tx.commit().await?;
         if let (Some(img), Some(dir)) = (&lib.image, dir) {
+            anyhow::ensure!(valid_image_ref(img), "bad image ref in manifest: {img}");
             renders.push(("lib", lib_id, dir.join(img)));
         }
     }

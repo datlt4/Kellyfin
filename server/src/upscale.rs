@@ -1,7 +1,7 @@
 //! Experimental AI upscaling. GPU workers (upscaler/) pull jobs from here over HTTP: they announce their models,
 //! claim a queued job, download the source, upload the result, and the result becomes an extra version of the video.
 use crate::{
-    auth::{Admin, User},
+    auth::{Admin, MediaUser},
     error::{ApiError, ApiResult},
     util, AppState,
 };
@@ -76,9 +76,22 @@ async fn token(st: &AppState) -> ApiResult<String> {
 }
 
 /// Worker requests carry `X-Upscaler-Token`.
+/// Constant-time comparison: token length is public, content is not.
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut d = 0u8;
+    for i in 0..a.len() {
+        d |= a[i] ^ b[i];
+    }
+    d == 0
+}
+
 async fn worker_auth(st: &AppState, headers: &HeaderMap) -> ApiResult<()> {
     let sent = headers.get("x-upscaler-token").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if sent.is_empty() || sent != token(st).await? {
+    if sent.is_empty() || !ct_eq(sent, &token(st).await?) {
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "bad upscaler token"));
     }
     Ok(())
@@ -242,7 +255,7 @@ pub async fn versions(st: &AppState, item: i64) -> sqlx::Result<Vec<Version>> {
         .await
 }
 
-pub async fn play(State(st): State<AppState>, _u: User, Path((id, model)): Path<(i64, String)>, req: Request) -> ApiResult<Response> {
+pub async fn play(State(st): State<AppState>, _u: MediaUser, Path((id, model)): Path<(i64, String)>, req: Request) -> ApiResult<Response> {
     let out: String = sqlx::query_scalar("SELECT output FROM upscale_jobs WHERE item_id = ? AND model = ? AND status = 'done'")
         .bind(id)
         .bind(&model)

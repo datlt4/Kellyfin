@@ -27,12 +27,43 @@ pub struct Proxy {
 /// Hop-by-hop headers are not forwarded.
 const HOP: &[&str] = &["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer", "host"];
 
-fn cors(h: &mut HeaderMap) {
+/// Constant-time comparison: the secret's length is public, its content is not.
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut d = 0u8;
+    for i in 0..a.len() {
+        d |= a[i] ^ b[i];
+    }
+    d == 0
+}
+
+/// CORS for exactly one consumer: this app's own webview. The request Origin
+/// is echoed only when it is an app origin (tauri/capacitor) or loopback;
+/// anything else gets no Allow-Origin, so a stray web page cannot read
+/// proxied responses through the user's browser.
+fn cors(origin: Option<&HeaderValue>, h: &mut HeaderMap) {
+    let echo = origin.is_some_and(|o| {
+        let o = o.as_bytes();
+        o.starts_with(b"tauri://")
+            || o.starts_with(b"capacitor://")
+            || o.starts_with(b"http://localhost")
+            || o.starts_with(b"http://127.0.0.1")
+            || o.starts_with(b"http://tauri.")
+            || o.starts_with(b"https://tauri.")
+            || o.starts_with(b"ionic://")
+    });
+    if echo {
+        if let Some(v) = origin.and_then(|o| o.to_str().ok()).and_then(|o| HeaderValue::from_str(o).ok()) {
+            h.insert(HeaderName::from_static("access-control-allow-origin"), v);
+        }
+        h.insert(HeaderName::from_static("vary"), HeaderValue::from_static("Origin"));
+    }
     for (k, v) in [
-        ("access-control-allow-origin", "*"),
-        ("access-control-allow-headers", "*"),
+        ("access-control-allow-headers", "authorization, content-type, range"),
         ("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS"),
-        ("access-control-expose-headers", "*"),
     ] {
         h.insert(HeaderName::from_static(k), HeaderValue::from_static(v));
     }
@@ -40,7 +71,9 @@ fn cors(h: &mut HeaderMap) {
 
 impl Proxy {
     pub fn new(secret: String) -> Self {
-        let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::limited(5)).build().expect("http client");
+        // No redirect following: stored access headers must never ride along
+        // to wherever a compromised server points a 302.
+        let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().expect("http client");
         Self { target: Arc::new(RwLock::new(None)), secret, client }
     }
 
@@ -50,8 +83,9 @@ impl Proxy {
 }
 
 async fn forward(State(p): State<Proxy>, req: Request) -> Response {
+    let origin = req.headers().get(header::ORIGIN).cloned();
     let mut res = handle(&p, req).await.unwrap_or_else(|e| (StatusCode::BAD_GATEWAY, e).into_response());
-    cors(res.headers_mut());
+    cors(origin.as_ref(), res.headers_mut());
     res
 }
 
@@ -60,12 +94,14 @@ async fn handle(p: &Proxy, req: Request) -> Result<Response, String> {
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
     let pq = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("/");
-    let rest = pq
-        .strip_prefix('/')
-        .and_then(|s| s.strip_prefix(p.secret.as_str()))
-        .filter(|r| r.is_empty() || r.starts_with('/') || r.starts_with('?'))
-        .ok_or("forbidden")?
-        .to_owned();
+    let seg = pq.strip_prefix('/').and_then(|s| s.split(['/', '?']).next()).unwrap_or("");
+    if !ct_eq(seg, &p.secret) {
+        return Err("forbidden".into());
+    }
+    let rest = pq[1 + seg.len()..].to_owned();
+    if !(rest.is_empty() || rest.starts_with('/') || rest.starts_with('?')) {
+        return Err("forbidden".into());
+    }
     let Some(t) = p.target.read().unwrap().clone() else { return Err("no server selected".into()) };
 
     let (parts, body) = req.into_parts();
@@ -76,7 +112,9 @@ async fn handle(p: &Proxy, req: Request) -> Result<Response, String> {
     for (k, v) in &t.headers {
         rb = rb.header(k.as_str(), v.as_str());
     }
-    let body = axum::body::to_bytes(body, 128 << 20).await.map_err(|e| e.to_string())?;
+    // Image uploads top out at 64 MiB server-side; nothing legitimate through
+    // the proxy is bigger (whole-video worker uploads bypass the app).
+    let body = axum::body::to_bytes(body, 64 << 20).await.map_err(|e| e.to_string())?;
     let up = rb.body(body).send().await.map_err(|e| e.to_string())?;
 
     let mut res = Response::builder().status(up.status().as_u16());

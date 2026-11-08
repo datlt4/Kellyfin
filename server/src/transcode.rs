@@ -2,7 +2,7 @@
 //! A request far from what any job of the item is producing (seek, quality switch, another viewer) starts a new
 //! ffmpeg job; a few jobs per item can run side by side, so two viewers of one video do not cancel each other.
 use crate::{
-    auth::User,
+    auth::MediaUser,
     error::{ApiError, ApiResult},
     AppState,
 };
@@ -32,6 +32,9 @@ const RESUME_AHEAD: u32 = 6;
 const IDLE_KILL: Duration = Duration::from_secs(90);
 /// Jobs kept per item; the least recently used one goes first.
 const JOBS_PER_ITEM: usize = 3;
+/// Global cap: an authenticated user cycling rendition/item combos must not
+/// be able to spawn unbounded ffmpeg processes.
+const MAX_JOBS: usize = 12;
 
 /// (short side, video bitrate kbps)
 const LADDER: &[(u32, u32)] = &[(1080, 5000), (720, 2800), (480, 1400), (360, 800), (240, 450), (144, 250)];
@@ -336,6 +339,10 @@ impl Transcoder {
                         let oldest = mine.iter().min().unwrap().1;
                         jobs.remove(&oldest);
                     }
+                    if jobs.len() >= MAX_JOBS {
+                        let oldest = jobs.values().min_by_key(|j| j.last_req).map(|j| j.generation).unwrap();
+                        jobs.remove(&oldest);
+                    }
                     let job = self.spawn(item, src, v, n, hw.as_ref())?;
                     let g = job.generation;
                     jobs.insert(g, job);
@@ -466,7 +473,7 @@ fn m3u8(body: String) -> Response {
 }
 
 /// Master playlist: one H.264 rendition per ladder rung, all with the chosen audio track.
-pub async fn master(State(st): State<AppState>, _u: User, Path(id): Path<i64>, Query(q): Query<MasterQ>) -> ApiResult<Response> {
+pub async fn master(State(st): State<AppState>, _u: MediaUser, Path(id): Path<i64>, Query(q): Query<MasterQ>) -> ApiResult<Response> {
     let src = source(&st, id).await?;
     let audio = if q.audio >= 0 { q.audio } else { first_audio(&src) };
     let t = q.t.unwrap_or_default();
@@ -491,7 +498,7 @@ fn first_audio(src: &Source) -> i64 {
 /// Variant playlist (`index.m3u8`) or one segment (`<n>.ts`).
 pub async fn hls_file(
     State(st): State<AppState>,
-    _u: User,
+    _u: MediaUser,
     Path((id, p, audio, file)): Path<(i64, u32, i64, String)>,
     Query(q): Query<MasterQ>,
 ) -> ApiResult<Response> {

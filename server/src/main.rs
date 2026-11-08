@@ -56,8 +56,33 @@ fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
 }
 
+/// Minimal `.env` loader (no new dependency): `KELLYFIN_DATA/.env` then `./.env`,
+/// `KEY=VALUE` lines, `#` comments and quotes stripped, never overriding the
+/// real environment. Lets the documented "server .env" actually work.
+fn load_dotenv() {
+    let data_env = std::env::var("KELLYFIN_DATA").map(PathBuf::from).unwrap_or_else(|_| "./data".into()).join(".env");
+    for p in [data_env, PathBuf::from(".env")] {
+        let Ok(text) = std::fs::read_to_string(&p) else { continue };
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || !line.contains('=') {
+                continue;
+            }
+            let (k, v) = line.split_once('=').unwrap();
+            let (k, mut v) = (k.trim(), v.trim());
+            if (v.starts_with('"') && v.ends_with('"') && v.len() >= 2) || (v.starts_with('\'') && v.ends_with('\'') && v.len() >= 2) {
+                v = &v[1..v.len() - 1];
+            }
+            if !k.is_empty() && std::env::var(k).is_err() {
+                unsafe { std::env::set_var(k, v) };
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    load_dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();

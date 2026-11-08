@@ -19,28 +19,58 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use std::sync::Mutex;
 
-fn enc_key() -> anyhow::Result<[u8; 32]> {
+/// Domain-separated, stretched wrapper around the env secret. A single raw
+/// SHA-256 of a low-entropy env value is brute-forceable; iterating the hash
+/// (with a versioned domain tag) raises that cost without a new dependency.
+/// Versioned blobs ("v1" magic) keep keys encrypted by older builds readable.
+fn kdf(secret: &str) -> [u8; 32] {
+    let mut h = Sha256::digest(format!("kellyfin-openrouter-v1:{secret}").as_bytes());
+    for _ in 0..4096 {
+        h = Sha256::digest(h);
+    }
+    h.into()
+}
+
+fn legacy_key() -> anyhow::Result<[u8; 32]> {
     let v = std::env::var("KELLYFIN_OPENROUTER_SECRET")
-        .context("KELLYFIN_OPENROUTER_SECRET is not set; add one to the server's .env")?;
+        .context("KELLYFIN_OPENROUTER_SECRET is not set; set it in the environment (or the server .env)")?;
     Ok(Sha256::digest(v.as_bytes()).into())
 }
 
 pub async fn encrypt_key(plain: &str) -> anyhow::Result<String> {
-    let k = enc_key()?;
-    let cipher = Aes256Gcm::new_from_slice(&k).context("wrong key length")?;
+    let cipher = Aes256Gcm::new_from_slice(&kdf(
+        &std::env::var("KELLYFIN_OPENROUTER_SECRET")
+            .context("KELLYFIN_OPENROUTER_SECRET is not set; set it in the environment (or the server .env)")?,
+    ))
+    .context("wrong key length")?;
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     let out = cipher.encrypt(&nonce, plain.as_bytes()).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let mut blob = nonce.to_vec();
+    let mut blob = b"v1".to_vec();
+    blob.extend_from_slice(&nonce);
     blob.extend_from_slice(&out);
     Ok(B64.encode(blob))
 }
 
 pub async fn decrypt_key(enc: &str) -> anyhow::Result<String> {
-    let k = enc_key()?;
     let blob = B64.decode(enc).context("stored key is not valid base64")?;
-    if blob.len() < 13 {
+    // v1 blob: "v1" + 12-byte nonce + ciphertext (16-byte GCM tag minimum).
+    if let Some(body) = blob.strip_prefix(b"v1".as_slice()) {
+        if body.len() < 12 + 16 {
+            anyhow::bail!("stored key is too short");
+        }
+        let secret = std::env::var("KELLYFIN_OPENROUTER_SECRET")
+            .context("KELLYFIN_OPENROUTER_SECRET is not set; set it in the environment (or the server .env)")?;
+        let (nonce, ct) = body.split_at(12);
+        let cipher = Aes256Gcm::new_from_slice(&kdf(&secret)).context("wrong key length")?;
+        let pt = cipher.decrypt(nonce.into(), ct).map_err(|e| anyhow::anyhow!("{e}"))?;
+        return Ok(String::from_utf8(pt)?);
+    }
+    // Legacy blob (single-SHA-256 key, no magic): still decryptable so old
+    // rows survive the upgrade; new writes always use v1.
+    if blob.len() < 12 + 16 {
         anyhow::bail!("stored key is too short");
     }
+    let k = legacy_key()?;
     let (nonce, ct) = blob.split_at(12);
     let cipher = Aes256Gcm::new_from_slice(&k).context("wrong key length")?;
     let pt = cipher.decrypt(nonce.into(), ct).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -90,7 +120,7 @@ pub async fn state(db: &SqlitePool, user_id: i64) -> anyhow::Result<OpenRouterSt
         Some((k, p, f)) => (!k.is_empty(), p, f),
         None => (false, "dots-studio/dots-3-note-preview:free".to_owned(), "nvidia/nemotron-3.5-super-vl:free".to_owned()),
     };
-    Ok(OpenRouterState { enabled: enc_key().is_ok(), key_set, primary_model, fallback_model })
+    Ok(OpenRouterState { enabled: std::env::var("KELLYFIN_OPENROUTER_SECRET").is_ok(), key_set, primary_model, fallback_model })
 }
 
 #[derive(Deserialize)]
@@ -130,10 +160,12 @@ pub async fn put(st: &crate::AppState, user_id: i64, body: Put) -> crate::error:
     let encrypted_key = match (&body.clear_key, &body.key) {
         (Some(true), _) => String::new(),
         (_, Some(k)) => {
-            if k.trim().is_empty() {
+            // The key is stored exactly as typed: trimming it here would
+            // silently mutate the credential the provider expects.
+            if k.is_empty() {
                 return Err(ApiError::new(StatusCode::BAD_REQUEST, "an empty key clears nothing; use clear_key"));
             }
-            encrypt_key(k.trim()).await?
+            encrypt_key(k).await?
         }
         _ => cur_key,
     };

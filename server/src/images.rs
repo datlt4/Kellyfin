@@ -1,7 +1,19 @@
 //! Pre-rendered WebP variants: images/{kind}/{id}/{s,m,l}.webp (+ orig for custom images).
+use crate::{
+    auth::MediaUser,
+    error::{ApiError, ApiResult},
+    AppState,
+};
 use anyhow::{bail, Context};
+use axum::{
+    body::Body,
+    extract::{Path as RoutePath, State},
+    http::{Request, StatusCode},
+    response::{IntoResponse, Response},
+};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
+use tower::ServiceExt;
 
 const FILTER: &str = "split=4[a][b][c][d];\
     [a]scale='min(400,iw)':-2[s];[b]scale='min(800,iw)':-2[m];[c]scale='min(1280,iw)':-2[l];\
@@ -33,10 +45,46 @@ async fn render(input: &[&str], crop: Option<&str>, dst: &Path) -> anyhow::Resul
 
 /// Stores a custom image (kept as `orig` for export) and renders it.
 pub async fn from_file(src: &Path, dst: &Path) -> anyhow::Result<String> {
+    // Decompression-bomb guard: refuse absurd pixel counts before ffmpeg renders.
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0"])
+        .arg(format!("file:{}", src.display()))
+        .output()
+        .await
+        .context("spawn ffprobe")?;
+    let dims = String::from_utf8_lossy(&out.stdout);
+    let (w, h) = dims.trim().split_once(',').and_then(|(w, h)| Some((w.parse::<u64>().ok()?, h.parse::<u64>().ok()?))).unwrap_or((0, 0));
+    if w == 0 || h == 0 || w > 16000 || h > 16000 || w * h > 67_000_000 {
+        bail!("image dimensions not usable ({w}x{h})");
+    }
     tokio::fs::create_dir_all(dst).await?;
     let orig = dst.join("orig");
     tokio::fs::copy(src, &orig).await.with_context(|| format!("copy {}", src.display()))?;
     render(&["-i", &format!("file:{}", orig.display())], None, dst).await
+}
+
+/// Authenticated thumbnail servir: only images/{item,lib,user}/{id}/{s,m,l}.webp.
+/// `<img>` cannot send headers, so the session arrives as `?t=` (MediaUser).
+pub async fn file(State(st): State<AppState>, _u: MediaUser, RoutePath(path): RoutePath<String>) -> ApiResult<Response> {
+    let bad = || ApiError::new(StatusCode::NOT_FOUND, "not found");
+    let mut parts = path.split('/');
+    let (kind, id, variant) = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(k), Some(id), Some(v), None) => (k, id, v),
+        _ => return Err(bad()),
+    };
+    if !matches!(kind, "item" | "lib" | "user") || !matches!(variant, "s.webp" | "m.webp" | "l.webp") {
+        return Err(bad());
+    }
+    if !id.chars().all(|c| c.is_ascii_digit()) || id.len() > 12 {
+        return Err(bad());
+    }
+    let full = st.images.join(kind).join(id).join(variant);
+    let req = Request::builder().uri("/").body(Body::empty()).map_err(anyhow::Error::from)?;
+    tower_http::services::ServeFile::new(full)
+        .oneshot(req)
+        .await
+        .map(|r| r.map(Body::new).into_response())
+        .map_err(|e| anyhow::anyhow!(e).into())
 }
 
 /// Grabs a frame at 10% of the video (max 5 min in) as thumbnail, without its black bars.

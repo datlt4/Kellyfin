@@ -290,8 +290,10 @@ export async function restore(): Promise<boolean> {
 }
 
 export type Size = "s" | "m" | "l";
+// Thumbnails need the session: <img> cannot send headers, so it rides as ?t=
+// (the server only accepts it for media, never for the JSON API).
 export const img = (c: { img: string | null; imgv: number | null }, size: Size) =>
-  c.img ? `${server()}${c.img}${size}.webp?v=${c.imgv}` : undefined;
+  c.img ? `${server()}${c.img}${size}.webp?${new URLSearchParams({ v: String(c.imgv ?? ""), t: token ?? "" })}` : undefined;
 
 export function fmtDuration(sec: number | null) {
   if (!sec) return "";
