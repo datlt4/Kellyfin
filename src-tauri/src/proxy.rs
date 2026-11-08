@@ -171,11 +171,21 @@ mod tests {
         tokio::spawn(async move { axum::serve(l, p.router()).await.unwrap() });
 
         let c = reqwest::Client::new();
-        let r = c.get(format!("{base}/abc/api/x")).header("Range", "bytes=0-1").send().await.unwrap();
+        let r = c
+            .get(format!("{base}/abc/api/x"))
+            .header("Range", "bytes=0-1")
+            .header("Origin", "tauri://localhost")
+            .send()
+            .await
+            .unwrap();
         assert_eq!(r.status(), 206);
-        assert_eq!(r.headers()["access-control-allow-origin"], "*");
+        assert_eq!(r.headers()["access-control-allow-origin"], "tauri://localhost");
         assert_eq!(r.headers()["content-range"], "bytes 0-1/10");
         assert_eq!(r.text().await.unwrap(), "bytes=0-1");
+        // A stray web origin gets no Allow-Origin: its pages cannot read proxied responses.
+        let r = c.get(format!("{base}/abc/api/x")).header("Origin", "https://evil.example").send().await.unwrap();
+        assert_eq!(r.status(), 206);
+        assert!(!r.headers().contains_key("access-control-allow-origin"));
         // Wrong secret never reaches upstream.
         assert_eq!(c.get(format!("{base}/nope/api/x")).send().await.unwrap().status(), 502);
     }
