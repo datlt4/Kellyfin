@@ -25,14 +25,13 @@ services:
       - LT_LOAD_ONLY=en,vi,zh,ja,ko,ms,es
       - LT_THREADS=8
 
+  # hienanh/whisper with narrator/whisper/server.py: /health answers during a transcription, a run can be cancelled.
   whisper:
-    image: hienanh/whisper:latest
+    image: hienanh/kellyfin-whisper:latest
     container_name: fs-whisper
     restart: unless-stopped
     environment:
       - WHISPER_MODEL=medium
-    volumes:
-      - ./whisper/server.py:/app/server.py:ro  # the image's server, but a transcription no longer blocks /health (see the file)
     deploy:
       resources:
         reservations:
