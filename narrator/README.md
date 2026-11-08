@@ -28,6 +28,11 @@ them one after the other and Kellyfin saves `<name>.mp3` and `<name>.vi.srt` nex
 like a podcast on a black screen with a dim logo, subtitles included. Videos in the same library that have an English
 subtitle file get the voice muxed in as before. Whisper and OCR pipelines skip lessons. Needs edge-tts (Internet).
 
+The Whisper image's own `server.py` runs a transcription inside its event loop, so while it works the service answers
+nothing (not `/health`) and a worker's check times out; `whisper/server.py` here is that file with the transcription in a
+thread, mounted over it by the compose files. Without the mount everything still works, but a deleted job's run can make
+the next job wait (the worker waits for it instead of failing).
+
 ## Several videos at once
 
 By default the worker works on **one video at a time** (sequential) — edge-tts throttles a flood of connections from one

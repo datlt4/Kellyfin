@@ -193,21 +193,40 @@ def need(base, path, what):
 
 
 def whisper(base, audio, lang, tmp, alive=lambda: None):
-    need(base, "/whisper/health", "Whisper")
+    try:
+        requests.get(f"{base}/whisper/health", timeout=15).raise_for_status()
+    except requests.Timeout:
+        # A service that has not been fixed (see whisper/server.py) answers nothing while it transcribes, e.g. a run an
+        # earlier, deleted job left behind: the request below queues behind it. Failing the job here would only lose its place.
+        log("Whisper does not answer /health: it is busy with another run, waiting for it")
+    except Exception as e:
+        raise JobError(f"Whisper at {base}/whisper/health does not answer: {e}") from e
     wav = os.path.join(tmp, "speech.wav")
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", audio, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav],
                    check=True)
+
+    def post():
+        with open(wav, "rb") as f:
+            return requests.post(f"{base}/whisper/v1/transcribe", files={"file": ("speech.wav", f, "audio/wav")},
+                                 data={"model": WHISPER_MODEL, "language": lang}, timeout=WHISPER_TIMEOUT)
+
     ex = ThreadPoolExecutor(1)
     try:
-        with open(wav, "rb") as f:
-            fut = ex.submit(requests.post, f"{base}/whisper/v1/transcribe", files={"file": ("speech.wav", f, "audio/wav")},
-                            data={"model": WHISPER_MODEL, "language": lang}, timeout=WHISPER_TIMEOUT)
+        for attempt in (1, 2, 3):
+            fut = ex.submit(post)
             while True:
                 try:
                     r = fut.result(timeout=15)
                     break
                 except FutureTimeout:
                     alive()  # raises JobCancelled when the job was deleted or paused
+            # nginx gave up waiting for the service (it was busy, restarting): ask again a little later, still in line.
+            if r.status_code not in (502, 503, 504) or attempt == 3:
+                break
+            log(f"Whisper answered {r.status_code}, asking again in 30 s ({attempt}/3)")
+            for _ in range(2):
+                time.sleep(15)
+                alive()
     finally:
         ex.shutdown(wait=False)  # an abandoned request ends by itself
     r.raise_for_status()
