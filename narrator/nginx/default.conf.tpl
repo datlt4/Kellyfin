@@ -20,6 +20,11 @@ map $upstream_addr $vieneu_node_name {
     default     "";
 }
 
+# Docker's DNS, asked again every few seconds for the services that are set below through a variable: a container that is
+# recreated (an update) gets a new IP, and nginx must follow it without a reload (a name in a plain proxy_pass is looked up
+# once, at start). Names given by extra_hosts (easyocr on another machine) are in /etc/hosts, not in this DNS: those stay plain.
+resolver 127.0.0.11 valid=5s ipv6=off;
+
 server {
     listen 80;
     client_max_body_size 2048m;
@@ -31,7 +36,9 @@ server {
 
     # faster-whisper: POST /whisper/v1/transcribe, GET /whisper/health
     location /whisper/ {
-        proxy_pass http://whisper:9000/;
+        set $whisper http://whisper:9000;
+        rewrite ^/whisper/(.*)$ /$1 break;
+        proxy_pass $whisper;
         proxy_read_timeout 14400s;
         proxy_send_timeout 14400s;
         proxy_request_buffering off;
@@ -39,7 +46,9 @@ server {
 
     # LibreTranslate/argos: GET /translate/languages, POST /translate/translate
     location /translate/ {
-        proxy_pass http://argos:5000/;
+        set $argos http://argos:5000;
+        rewrite ^/translate/(.*)$ /$1 break;
+        proxy_pass $argos;
         proxy_read_timeout 300s;
     }
 

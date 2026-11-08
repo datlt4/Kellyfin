@@ -192,49 +192,76 @@ def need(base, path, what):
         raise JobError(f"{what} at {base}{path} does not answer: {e}") from e
 
 
+WHISPER_RETRY = (502, 503, 504)  # nginx answers these while the service restarts (an update) or is too busy to answer
+
+
 def whisper(base, audio, lang, tmp, alive=lambda: None):
-    try:
-        requests.get(f"{base}/whisper/health", timeout=15).raise_for_status()
-    except requests.Timeout:
-        # A service that has not been fixed (see whisper/server.py) answers nothing while it transcribes, e.g. a run an
-        # earlier, deleted job left behind: the request below queues behind it. Failing the job here would only lose its place.
-        log("Whisper does not answer /health: it is busy with another run, waiting for it")
-    except Exception as e:
-        raise JobError(f"Whisper at {base}/whisper/health does not answer: {e}") from e
+    for attempt in range(1, 9):
+        try:
+            requests.get(f"{base}/whisper/health", timeout=15).raise_for_status()
+            break
+        except requests.Timeout:
+            # A service that has not been fixed (see whisper/server.py) answers nothing while it transcribes, e.g. a run an
+            # earlier, deleted job left behind: the request below queues behind it. Failing the job here would only lose its place.
+            log("Whisper does not answer /health: it is busy with another run, waiting for it")
+            break
+        except (requests.ConnectionError, requests.HTTPError) as e:
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if code is not None and code not in WHISPER_RETRY:
+                raise JobError(f"Whisper at {base}/whisper/health does not answer: {e}") from e
+            if attempt == 8:  # ~2 minutes: not an update, it is down
+                raise JobError(f"Whisper at {base}/whisper/health does not answer: {e}") from e
+            log(f"Whisper is restarting or unreachable ({code or 'no connection'}), waiting ({attempt}/8)")
+            time.sleep(15)
+            alive()
+        except Exception as e:
+            raise JobError(f"Whisper at {base}/whisper/health does not answer: {e}") from e
     wav = os.path.join(tmp, "speech.wav")
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", audio, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav],
                    check=True)
 
-    rid = uuid.uuid4().hex  # lets us stop this run in the service (whisper/server.py) if the job is deleted or paused
-
-    def post():
-        with open(wav, "rb") as f:
+    def post(rid):
+        with open(wav, "rb") as f:  # rid lets us stop this run in the service (whisper/server.py)
             return requests.post(f"{base}/whisper/v1/transcribe", headers={"X-Request-Id": rid},
                                  files={"file": ("speech.wav", f, "audio/wav")},
                                  data={"model": WHISPER_MODEL, "language": lang}, timeout=WHISPER_TIMEOUT)
 
+    def stop(rid):
+        try:  # a run nobody wants must not keep the CPU (a service without /v1/cancel answers 404: nothing to do)
+            requests.post(f"{base}/whisper/v1/cancel/{rid}", timeout=10)
+        except requests.RequestException:
+            pass
+
     ex = ThreadPoolExecutor(1)
+    rid = None
     try:
         for attempt in (1, 2, 3):
-            fut = ex.submit(post)
+            rid = uuid.uuid4().hex
+            fut = ex.submit(post, rid)
+            r, err = None, None
             while True:
                 try:
                     r = fut.result(timeout=15)
                     break
                 except FutureTimeout:
                     alive()  # raises JobCancelled when the job was deleted or paused
-            # nginx gave up waiting for the service (it was busy, restarting): ask again a little later, still in line.
-            if r.status_code not in (502, 503, 504) or attempt == 3:
+                except requests.ConnectionError as e:  # nginx or the service restarted under the request
+                    err = e
+                    break
+            if err is None and r.status_code not in WHISPER_RETRY:
                 break
-            log(f"Whisper answered {r.status_code}, asking again in 30 s ({attempt}/3)")
+            if attempt == 3:
+                break
+            log(f"Whisper {'connection lost' if err else f'answered {r.status_code}'}, asking again in 30 s ({attempt}/3)")
+            stop(rid)  # if the service still has the first one, it must not run twice
             for _ in range(2):
                 time.sleep(15)
                 alive()
+        if err is not None:
+            raise JobError(f"Whisper connection lost: {err}") from err
     except JobCancelled:
-        try:  # a run nobody wants must not keep the CPU (a service without /v1/cancel answers 404: nothing to do)
-            requests.post(f"{base}/whisper/v1/cancel/{rid}", timeout=10)
-        except requests.RequestException:
-            pass
+        if rid:
+            stop(rid)
         raise
     finally:
         ex.shutdown(wait=False)

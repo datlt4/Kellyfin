@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "kellyfin-server"
-version = "2.19.3"
+version = "2.19.4"
 dependencies = [
  "aes-gcm",
  "anyhow",
