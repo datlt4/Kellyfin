@@ -30,8 +30,9 @@ subtitle file get the voice muxed in as before. Whisper and OCR pipelines skip l
 
 The Whisper image's own `server.py` runs a transcription inside its event loop, so while it works the service answers
 nothing (not `/health`) and a worker's check times out; `whisper/server.py` here is that file with the transcription in a
-thread, mounted over it by the compose files. Without the mount everything still works, but a deleted job's run can make
-the next job wait (the worker waits for it instead of failing).
+thread, mounted over it by the compose files, and it can stop a run: the worker sends `POST /v1/cancel/<request id>` when its job is
+deleted or paused, so the run does not keep the CPU (the image alone cannot cancel one). Without the mount everything still works, but a
+deleted job's run goes on for minutes and the next job waits for it (the worker waits instead of failing).
 
 ## Several videos at once
 

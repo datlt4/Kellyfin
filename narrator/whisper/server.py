@@ -3,8 +3,11 @@ event loop. In the image `transcribe` is `async def` and runs the (minutes long,
 loop, so while it runs the service answers nothing, not even /health, and a second request is not even read: the worker
 saw "health does not answer" and nginx 504s. Here the endpoint is a plain `def` (FastAPI runs it in a thread), one
 transcription at a time under `_lock` (the next request waits, as before), and /health answers at once.
+A request may carry an `X-Request-Id`; POST /v1/cancel/<id> then stops it: at once while it waits for its turn, within a
+few seconds (the next segment) while it runs. The worker does that when its job is deleted or paused, so a run nobody
+wants any more does not hold the CPU (a transcription cannot otherwise be stopped).
 Mount it over the image's file: see docker-compose.yml."""
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 import os
 import tempfile
@@ -13,6 +16,7 @@ import threading
 app = FastAPI(title="whisper-remote")
 _model = None
 _lock = threading.Lock()
+_cancel = {}  # X-Request-Id -> Event, set by /v1/cancel
 
 
 def get_model(name: str):
@@ -58,23 +62,42 @@ def health():
     return {"ok": True, "model": name, "device": device}
 
 
+@app.post("/v1/cancel/{rid}")
+def cancel(rid: str):
+    ev = _cancel.get(rid)
+    if ev:
+        ev.set()
+    return {"cancelled": ev is not None}
+
+
 @app.post("/v1/transcribe", response_class=PlainTextResponse)
-def transcribe(file: UploadFile = File(...), model: str = Form("medium"), language: str = Form("en")):
+def transcribe(file: UploadFile = File(...), model: str = Form("medium"), language: str = Form("en"),
+               x_request_id: str = Header(None)):
     suffix = os.path.splitext(file.filename or "audio")[1] or ".wav"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(file.file.read())
         path = tmp.name
+    ev = threading.Event()
+    if x_request_id:
+        _cancel[x_request_id] = ev
     try:
-        with _lock:  # one at a time; a second request waits here, in its own thread
-            return _run(path, model, language)
+        # One at a time; a second request waits here, in its own thread, and can be cancelled while it does.
+        while not _lock.acquire(timeout=1):
+            if ev.is_set():
+                raise HTTPException(409, "cancelled")
+        try:
+            return _run(path, model, language, ev)
+        finally:
+            _lock.release()
     finally:
+        _cancel.pop(x_request_id, None)
         try:
             os.unlink(path)
         except OSError:
             pass
 
 
-def _run(path, model, language):
+def _run(path, model, language, ev):
     _, wm, _ = get_model(model)
     lang = (language or "en").strip().lower()
     if lang in ("auto", ""):
@@ -87,6 +110,8 @@ def _run(path, model, language):
     out = []
     idx = 0
     for seg in segments:
+        if ev.is_set():
+            raise HTTPException(409, "cancelled")  # the segments are made as we go: stopping here stops the work
         text = seg.text.strip()
         if not text.strip().replace(".", "").replace(",", "").replace(" ", ""):
             continue

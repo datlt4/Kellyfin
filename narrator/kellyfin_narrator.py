@@ -205,9 +205,12 @@ def whisper(base, audio, lang, tmp, alive=lambda: None):
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", audio, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav],
                    check=True)
 
+    rid = uuid.uuid4().hex  # lets us stop this run in the service (whisper/server.py) if the job is deleted or paused
+
     def post():
         with open(wav, "rb") as f:
-            return requests.post(f"{base}/whisper/v1/transcribe", files={"file": ("speech.wav", f, "audio/wav")},
+            return requests.post(f"{base}/whisper/v1/transcribe", headers={"X-Request-Id": rid},
+                                 files={"file": ("speech.wav", f, "audio/wav")},
                                  data={"model": WHISPER_MODEL, "language": lang}, timeout=WHISPER_TIMEOUT)
 
     ex = ThreadPoolExecutor(1)
@@ -227,8 +230,14 @@ def whisper(base, audio, lang, tmp, alive=lambda: None):
             for _ in range(2):
                 time.sleep(15)
                 alive()
+    except JobCancelled:
+        try:  # a run nobody wants must not keep the CPU (a service without /v1/cancel answers 404: nothing to do)
+            requests.post(f"{base}/whisper/v1/cancel/{rid}", timeout=10)
+        except requests.RequestException:
+            pass
+        raise
     finally:
-        ex.shutdown(wait=False)  # an abandoned request ends by itself
+        ex.shutdown(wait=False)
     r.raise_for_status()
     cues = dedupe(parse_srt(r.text))
     if not cues:
