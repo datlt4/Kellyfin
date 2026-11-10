@@ -2,7 +2,7 @@
   "name": "kellyfin",
   "private": true,
   "license": "MIT",
-  "version": "2.19.5",
+  "version": "2.19.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
