@@ -291,14 +291,21 @@ export async function restore(): Promise<boolean> {
       mediaToken = r.media_token;
       save(mediaKey(), mediaToken);
     } catch (e) {
-      // Old server without the endpoint: fall back in memory only, never
-      // persisted — a saved session token as mtoken would 401 everything
-      // after the next upgrade until a re-login. Anything else (notably the
-      // 401 api() already turned into a dropped session) means give up.
-      if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
-        mediaToken = token;
-      } else {
-        return false;
+      // Two tabs can mint at once and revoke each other (rotation): whoever
+      // saved last wins, so re-read before giving up.
+      mediaToken = load(mediaKey());
+      if (!mediaToken) {
+        // Old server without the endpoint: fall back in memory only, never
+        // persisted — a saved session token as mtoken would 401 everything
+        // after the next upgrade until a re-login. Anything else (notably the
+        // 401 api() already turned into a dropped session) means give up; a
+        // dead network shows "cannot reach", not a bare sign-in.
+        if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
+          mediaToken = token;
+        } else {
+          if (!(e instanceof ApiError)) setUnreachable(`Cannot reach ${p.name}. Check the network or pick another server.`);
+          return false;
+        }
       }
     }
   }
