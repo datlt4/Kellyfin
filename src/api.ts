@@ -143,7 +143,11 @@ export { server, activeServer };
 
 // One session per server ("token" for the page's own server, as before profiles existed).
 const tokenKey = () => (!isTauri && (activeServer()?.id ?? HERE) === HERE ? "token" : `token:${activeServer()?.id ?? ""}`);
+const mediaKey = () => (!isTauri && (activeServer()?.id ?? HERE) === HERE ? "mtoken" : `mtoken:${activeServer()?.id ?? ""}`);
 let token = isTauri ? null : load("token");
+// Scoped token for ?t= media URLs (video, HLS, subtitles, thumbnails).
+// The session token above must never appear in a URL.
+let mediaToken: string | null = isTauri ? null : load("mtoken");
 export const authToken = () => token;
 
 /** Base URL the UI talks to: the server itself, or the app's local proxy when headers must be added. */
@@ -175,6 +179,7 @@ export async function useServer(p: ServerProfile) {
   setActiveServer(p);
   save("activeServer", p.id);
   token = load(tokenKey());
+  mediaToken = load(mediaKey());
 }
 
 // iOS kills the local proxy's listener while the app is suspended; set_server then serves on a new base.
@@ -220,7 +225,9 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 function dropSession() {
   token = null;
+  mediaToken = null;
   save(tokenKey(), null);
+  save(mediaKey(), null);
   setUser(null);
 }
 
@@ -240,12 +247,16 @@ export async function refreshUser() {
 }
 
 export async function login(username: string, password: string) {
-  const r = await api<{ token: string; user: User }>("/auth/login", {
+  const r = await api<{ token: string; media_token?: string; user: User }>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
   });
   token = r.token;
+  // Old servers (no media tokens) predate scoping: fall back to the session
+  // token, which those servers still accept in ?t=.
+  mediaToken = r.media_token ?? r.token;
   save(tokenKey(), r.token);
+  save(mediaKey(), mediaToken);
   setUser(r.user);
   await refreshUser().catch(() => {});
 }
@@ -274,6 +285,15 @@ export async function restore(): Promise<boolean> {
   if (!p) return false;
   await useServer(p).catch(() => {});
   if (!token || !server()) return false;
+  if (!mediaToken) {
+    try {
+      const r = await api<{ media_token: string }>("/auth/media", { method: "POST" });
+      mediaToken = r.media_token;
+    } catch {
+      mediaToken = token; // pre-scoping server: it still takes the session in ?t=
+    }
+    save(mediaKey(), mediaToken);
+  }
   setUnreachable(null);
   // An unreachable address can hang for a minute or more: give up after 8 s.
   const stop = new AbortController();
@@ -293,7 +313,7 @@ export type Size = "s" | "m" | "l";
 // Thumbnails need the session: <img> cannot send headers, so it rides as ?t=
 // (the server only accepts it for media, never for the JSON API).
 export const img = (c: { img: string | null; imgv: number | null }, size: Size) =>
-  c.img ? `${server()}${c.img}${size}.webp?${new URLSearchParams({ v: String(c.imgv ?? ""), t: token ?? "" })}` : undefined;
+  c.img ? `${server()}${c.img}${size}.webp?${new URLSearchParams({ v: String(c.imgv ?? ""), t: mediaToken ?? "" })}` : undefined;
 
 export function fmtDuration(sec: number | null) {
   if (!sec) return "";
@@ -301,9 +321,9 @@ export function fmtDuration(sec: number | null) {
   return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
 }
 
-/** URL for <video>/<track> use: media elements cannot send headers, so the token rides in ?t=. */
+/** URL for <video>/<track> use: media elements cannot send headers, so the scoped media token rides in ?t=. */
 export const mediaUrl = (path: string, q: Record<string, string | number> = {}) =>
-  `${server()}/api${path}?${new URLSearchParams({ ...q, t: token ?? "" } as Record<string, string>)}`;
+  `${server()}/api${path}?${new URLSearchParams({ ...q, t: mediaToken ?? "" } as Record<string, string>)}`;
 
 export function fmtClock(sec: number) {
   const s = Math.max(0, Math.floor(sec));

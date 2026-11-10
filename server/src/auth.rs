@@ -48,6 +48,10 @@ pub async fn set_password(db: &SqlitePool, name: &str, password: &str) -> anyhow
     anyhow::ensure!(r.rows_affected() == 1, "no user named {name}");
     // A password change must not leave old sessions alive.
     sqlx::query("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE name = ?)").bind(name).execute(db).await?;
+    sqlx::query("DELETE FROM media_tokens WHERE user_id = (SELECT id FROM users WHERE name = ?)")
+        .bind(name)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -66,23 +70,53 @@ pub fn token_hash(presented: &str) -> String {
 }
 
 // ---------- Login brute-force throttle (per process, per username) ----------
+// Windowed: 5 failures within 5 minutes earn a 60 s refusal. An attacker must
+// sustain that rate to keep anyone out (no more one-probe-a-minute lockout),
+// and stale entries are pruned so random-name probing cannot grow the map.
 
-static LOGINS: OnceLock<Mutex<HashMap<String, (u32, i64)>>> = OnceLock::new();
+/// (failures in the current window, window start, last failure)
+type Attempt = (u32, i64, i64);
+const WINDOW: i64 = 300;
+const MAX_FAILS: u32 = 5;
+const LOCK_SECS: i64 = 60;
+const MAX_ENTRIES: usize = 10000;
 
-fn login_failures() -> &'static Mutex<HashMap<String, (u32, i64)>> {
+static LOGINS: OnceLock<Mutex<HashMap<String, Attempt>>> = OnceLock::new();
+
+fn login_failures() -> &'static Mutex<HashMap<String, Attempt>> {
     LOGINS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn prune(m: &mut HashMap<String, Attempt>, t: i64) {
+    m.retain(|_, (_, start, last)| t - (*start).min(*last) < 3600);
+    while m.len() > MAX_ENTRIES {
+        // Evict the stalest entry; amortized cheap, bounds memory.
+        if let Some(k) = m.iter().min_by_key(|(_, (_, _, last))| *last).map(|(k, _)| k.clone()) {
+            m.remove(&k);
+        } else {
+            break;
+        }
+    }
+}
+
 fn login_locked(key: &str) -> bool {
-    let m = login_failures().lock().unwrap();
-    m.get(key).is_some_and(|(fails, last)| *fails >= 5 && now() - *last < 60)
+    let mut m = login_failures().lock().unwrap();
+    let t = now();
+    prune(&mut m, t);
+    m.get(key).is_some_and(|(fails, start, last)| *fails >= MAX_FAILS && t - *start < WINDOW && t - *last < LOCK_SECS)
 }
 
 fn login_failed(key: &str) {
     let mut m = login_failures().lock().unwrap();
-    let e = m.entry(key.to_owned()).or_insert((0, 0));
-    e.0 += 1;
-    e.1 = now();
+    let t = now();
+    prune(&mut m, t);
+    let e = m.entry(key.to_owned()).or_insert((0, t, 0));
+    if t - e.1 > WINDOW {
+        *e = (1, t, t);
+    } else {
+        e.0 += 1;
+        e.2 = t;
+    }
 }
 
 fn login_cleared(key: &str) {
@@ -101,10 +135,11 @@ pub async fn ensure_admin(db: &SqlitePool) -> anyhow::Result<()> {
     let password = match std::env::var("KELLYFIN_ADMIN_PASSWORD") {
         Ok(p) if !p.is_empty() => p,
         _ => {
-            // Printed once to stderr only (never into the log stream) so log
-            // retention cannot keep the bootstrap credential around.
+            // First-run convenience with a real cost: in Docker this stderr
+            // lands in `docker logs`, so anyone with log access owns the box
+            // until the password is changed. Prefer KELLYFIN_ADMIN_PASSWORD.
             let p = random_hex(16);
-            eprintln!("created admin '{name}' with password: {p} (change it in Settings, it is not logged)");
+            eprintln!("created admin '{name}' with password: {p} (visible in container logs: change it in Settings at once)");
             p
         }
     };
@@ -120,13 +155,19 @@ pub async fn ensure_admin(db: &SqlitePool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Looks a presented token up by its hash (legacy plaintext rows still match
-/// while they exist, and are migrated to a hash on first successful use).
+/// Media tokens live as long as sessions (rotated on every login, wiped on
+/// password change). Shorter would be safer, but image/video URLs are rendered
+/// once per page: expiring them mid-browse would break playback and thumbnails.
+pub const MEDIA_TTL: i64 = SESSION_TTL;
+
+/// Looks a presented token up by its hash. The raw-value branch exists only
+/// for rows created before hashing (expires_at = 0) and migrates them; a hash
+/// copied out of the database never matches, in either position.
 async fn lookup(db: &SqlitePool, presented: &str) -> Option<User> {
     let hash = token_hash(presented);
     let row = sqlx::query_as::<_, (i64, String, bool, String, i64)>(
         "SELECT u.id, u.name, u.is_admin, s.token, s.expires_at FROM sessions s
-         JOIN users u ON u.id = s.user_id WHERE s.token = ? OR s.token = ?",
+         JOIN users u ON u.id = s.user_id WHERE s.token = ? OR (s.token = ? AND s.expires_at = 0)",
     )
     .bind(&hash)
     .bind(presented)
@@ -168,8 +209,65 @@ impl FromRequestParts<AppState> for User {
     }
 }
 
-/// Identity for media bytes (`<video>`, `<track>`, `<img>` cannot send headers,
-/// so the token rides in `?t=` there). Same session table, tighter blast radius.
+/// Issues a scoped media token for a user (stored hashed, like sessions).
+/// Media elements cannot send headers, so `<video>`, `<track>` and `<img>`
+/// carry this in `?t=` instead of the session token: a URL that leaks into a
+/// log or a Cast device can only ever fetch media bytes, never the JSON API.
+pub async fn issue_media_token(db: &SqlitePool, user_id: i64) -> anyhow::Result<String> {
+    let token = random_hex(32);
+    sqlx::query("INSERT INTO media_tokens (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+        .bind(token_hash(&token))
+        .bind(user_id)
+        .bind(now())
+        .bind(now() + MEDIA_TTL)
+        .execute(db)
+        .await?;
+    Ok(token)
+}
+
+/// Drops every media token of a user (password change, admin reset).
+pub async fn revoke_media_tokens(db: &SqlitePool, user_id: i64) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM media_tokens WHERE user_id = ?").bind(user_id).execute(db).await?;
+    Ok(())
+}
+
+/// Media-only lookup: the media_tokens table by hash, plus pre-upgrade
+/// sessions (expires_at = 0) whose raw token still rides in old `?t=` URLs.
+/// Anything issued after the upgrade authenticates media by media token only.
+async fn lookup_media(db: &SqlitePool, presented: &str) -> Option<User> {
+    let hash = token_hash(presented);
+    if let Some((id, name, is_admin)) = sqlx::query_as::<_, (i64, String, bool)>(
+        "SELECT u.id, u.name, u.is_admin FROM media_tokens m JOIN users u ON u.id = m.user_id
+         WHERE m.token_hash = ? AND (m.expires_at = 0 OR m.expires_at > ?)",
+    )
+    .bind(&hash)
+    .bind(now())
+    .fetch_optional(db)
+    .await
+    .ok()?
+    {
+        return Some(User { id, name, is_admin });
+    }
+    // Transition: a pre-upgrade session token in ?t=. Hashes never match
+    // here either (raw branch needs expires_at = 0, hashes are never stored raw).
+    lookup_legacy_session(db, presented).await
+}
+
+async fn lookup_legacy_session(db: &SqlitePool, presented: &str) -> Option<User> {
+    let row = sqlx::query_as::<_, (i64, String, bool)>(
+        "SELECT u.id, u.name, u.is_admin FROM sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.token = ? AND s.expires_at = 0",
+    )
+    .bind(presented)
+    .fetch_optional(db)
+    .await
+    .ok()??;
+    let (id, name, is_admin) = row;
+    Some(User { id, name, is_admin })
+}
+
+/// Identity for media bytes. Accepts the `?t=` media token (or a Bearer
+/// session for callers that have one); never the session token from a URL.
 pub struct MediaUser(pub User);
 
 impl std::ops::Deref for MediaUser {
@@ -184,16 +282,23 @@ impl FromRequestParts<AppState> for MediaUser {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         let unauthorized = || ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized");
-        // Media elements cannot send headers, so streams pass the token as ?t=.
-        let token = parts
+        if let Some(h) = parts
             .headers
             .get(AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-            .map(str::to_owned)
-            .or_else(|| parts.uri.query()?.split('&').find_map(|kv| kv.strip_prefix("t=")).map(str::to_owned))
+        {
+            // A header session is as good as a media token for media bytes.
+            if let Some(u) = lookup(&state.db, h).await {
+                return Ok(MediaUser(u));
+            }
+        }
+        let token = parts
+            .uri
+            .query()
+            .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("t=")))
             .ok_or_else(unauthorized)?;
-        lookup(&state.db, &token).await.map(MediaUser).ok_or_else(unauthorized)
+        lookup_media(&state.db, token).await.map(MediaUser).ok_or_else(unauthorized)
     }
 }
 
@@ -218,6 +323,9 @@ pub struct Login {
 #[derive(Serialize)]
 pub struct LoginOk {
     token: String,
+    /// Scoped token for ?t= media URLs (video, HLS, subtitles, thumbnails).
+    /// The session `token` above must never appear in a URL.
+    media_token: String,
     user: User,
 }
 
@@ -250,9 +358,19 @@ pub async fn login(State(st): State<AppState>, Json(req): Json<Login>) -> ApiRes
         .bind(now() + SESSION_TTL)
         .execute(&st.db)
         .await?;
-    // Opportunistic GC; keeps the table from growing forever.
+    let media_token = issue_media_token(&st.db, id).await?;
+    // Opportunistic GC; keeps the tables from growing forever.
     let _ = sqlx::query("DELETE FROM sessions WHERE expires_at > 0 AND expires_at < ?").bind(now()).execute(&st.db).await;
-    Ok(Json(LoginOk { token, user: User { id, name, is_admin } }))
+    let _ = sqlx::query("DELETE FROM media_tokens WHERE expires_at > 0 AND expires_at < ?").bind(now()).execute(&st.db).await;
+    Ok(Json(LoginOk { token, media_token, user: User { id, name, is_admin } }))
+}
+
+/// Mints a fresh scoped media token for the current session (used on page
+/// reload: the media token lives in localStorage, the session in a cookie-less
+/// header, and a server upgrade must not force everyone to re-login).
+pub async fn media(State(st): State<AppState>, u: User) -> ApiResult<Json<serde_json::Value>> {
+    let media_token = issue_media_token(&st.db, u.id).await?;
+    Ok(Json(serde_json::json!({ "media_token": media_token })))
 }
 
 #[derive(Deserialize)]

@@ -31,7 +31,8 @@ const USAGE: &str = "usage:
   kellyfin export DIR
   kellyfin repair [--apply]      list (or fix) titles/images that belong to another film
   kellyfin passwd USER PASSWORD
-env: KELLYFIN_DATA (./data), KELLYFIN_ADDR (0.0.0.0:8080), KELLYFIN_WEB, KELLYFIN_ADMIN_USER, KELLYFIN_ADMIN_PASSWORD";
+env: KELLYFIN_DATA (./data), KELLYFIN_ADDR (0.0.0.0:8080), KELLYFIN_WEB, KELLYFIN_ADMIN_USER, KELLYFIN_ADMIN_PASSWORD,
+  KELLYFIN_OPENROUTER_SECRET (per-user OpenRouter keys), KELLYFIN_STRICT_PERMS=0 (leave data readable by other users)";
 
 pub struct Config {
     pub data: PathBuf,
@@ -80,9 +81,17 @@ fn load_dotenv() {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // Environment first: set_var after threads exist is undefined behavior,
+    // and #[tokio::main] would already run us on runtime threads.
     load_dotenv();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();

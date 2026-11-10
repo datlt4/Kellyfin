@@ -2,7 +2,7 @@
 //! <video> and <img> cannot send headers, so in header mode every request goes through
 //! http://127.0.0.1:<port>/<secret>/..., streamed both ways (range requests keep working).
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{Request, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
@@ -45,16 +45,31 @@ fn ct_eq(a: &str, b: &str) -> bool {
 /// anything else gets no Allow-Origin, so a stray web page cannot read
 /// proxied responses through the user's browser.
 fn cors(origin: Option<&HeaderValue>, h: &mut HeaderMap) {
-    let echo = origin.is_some_and(|o| {
-        let o = o.as_bytes();
-        o.starts_with(b"tauri://")
-            || o.starts_with(b"capacitor://")
-            || o.starts_with(b"http://localhost")
-            || o.starts_with(b"http://127.0.0.1")
-            || o.starts_with(b"http://tauri.")
-            || o.starts_with(b"https://tauri.")
-            || o.starts_with(b"ionic://")
-    });
+    // Exact (scheme, host) match: prefix matching would also echo back
+    // http://localhost.evil.example. Same list as the server's CORS.
+    fn allowed(o: &[u8]) -> bool {
+        let o = match std::str::from_utf8(o) {
+            Ok(o) => o,
+            Err(_) => return false,
+        };
+        let (scheme, rest) = match o.split_once("://") {
+            Some(x) => x,
+            None => return false,
+        };
+        let host = rest.split(['/', '?', ':']).next().unwrap_or("");
+        matches!(
+            (scheme, host),
+            ("tauri", "localhost")
+                | ("capacitor", "localhost")
+                | ("ionic", "localhost")
+                | ("http", "localhost")
+                | ("http", "127.0.0.1")
+                | ("http", "[::1]")
+                | ("http", "tauri.localhost")
+                | ("https", "tauri.localhost")
+        )
+    }
+    let echo = origin.is_some_and(|o| allowed(o.as_bytes()));
     if echo {
         if let Some(v) = origin.and_then(|o| o.to_str().ok()).and_then(|o| HeaderValue::from_str(o).ok()) {
             h.insert(HeaderName::from_static("access-control-allow-origin"), v);
@@ -89,6 +104,17 @@ async fn forward(State(p): State<Proxy>, req: Request) -> Response {
     res
 }
 
+/// scheme://authority of a URL, for same-origin comparisons.
+fn origin_of(url: &str) -> &str {
+    match url.split_once("://") {
+        Some((s, rest)) => {
+            let auth = rest.split('/').next().unwrap_or("");
+            &url[..s.len() + 3 + auth.len()]
+        }
+        None => url,
+    }
+}
+
 async fn handle(p: &Proxy, req: Request) -> Result<Response, String> {
     if req.method() == Method::OPTIONS {
         return Ok(StatusCode::NO_CONTENT.into_response());
@@ -105,23 +131,78 @@ async fn handle(p: &Proxy, req: Request) -> Result<Response, String> {
     let Some(t) = p.target.read().unwrap().clone() else { return Err("no server selected".into()) };
 
     let (parts, body) = req.into_parts();
-    let mut rb = p.client.request(parts.method, format!("{}{}", t.url.trim_end_matches('/'), rest));
-    for (k, v) in parts.headers.iter().filter(|(k, _)| !HOP.contains(&k.as_str()) && *k != header::ORIGIN && *k != header::REFERER) {
-        rb = rb.header(k, v);
-    }
-    for (k, v) in &t.headers {
-        rb = rb.header(k.as_str(), v.as_str());
-    }
     // Image uploads top out at 64 MiB server-side; nothing legitimate through
     // the proxy is bigger (whole-video worker uploads bypass the app).
     let body = axum::body::to_bytes(body, 64 << 20).await.map_err(|e| e.to_string())?;
-    let up = rb.body(body).send().await.map_err(|e| e.to_string())?;
-
-    let mut res = Response::builder().status(up.status().as_u16());
-    for (k, v) in up.headers().iter().filter(|(k, _)| !HOP.contains(&k.as_str()) && !k.as_str().starts_with("access-control-")) {
-        res = res.header(k.as_str(), v.as_bytes());
+    let mut url = format!("{}{}", t.url.trim_end_matches('/'), rest);
+    let first_origin = origin_of(&url).to_owned();
+    let stored: Vec<(String, String)> = t.headers.clone();
+    let mut method = parts.method.clone();
+    let mut send_body: Option<Bytes> = Some(body);
+    for _ in 0..6 {
+        // Credentials stay on the original origin only: after a redirect
+        // elsewhere neither the stored access headers nor the caller's
+        // Authorization/Cookie ride along.
+        let same_origin = origin_of(&url) == first_origin;
+        let mut rb = p.client.request(method.clone(), url.clone());
+        for (k, v) in parts.headers.iter().filter(|(k, _)| {
+            !HOP.contains(&k.as_str())
+                && *k != header::ORIGIN
+                && *k != header::REFERER
+                && (same_origin || (*k != header::AUTHORIZATION && *k != header::COOKIE && *k != header::PROXY_AUTHORIZATION))
+        }) {
+            rb = rb.header(k, v);
+        }
+        if same_origin {
+            for (k, v) in &stored {
+                rb = rb.header(k.as_str(), v.as_str());
+            }
+        }
+        if let Some(b) = send_body.clone() {
+            rb = rb.body(b);
+        }
+        let up = rb.send().await.map_err(|e| e.to_string())?;
+        let status = up.status().as_u16();
+        let is_redirect = matches!(status, 301 | 302 | 303 | 307 | 308);
+        let loc = up.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()).map(str::to_owned);
+        // Redirects are followed by hand (not by reqwest): stored access
+        // headers are dropped the moment the origin changes, so they can never
+        // ride along to wherever a compromised server points a 302.
+        if is_redirect {
+            if let Some(next) = loc.as_deref().and_then(|l| resolve(&url, l)) {
+                if status == 303 {
+                    method = Method::GET;
+                    send_body = None;
+                }
+                url = next;
+                continue;
+            }
+        }
+        let mut res = Response::builder().status(status);
+        for (k, v) in up.headers().iter().filter(|(k, _)| !HOP.contains(&k.as_str()) && !k.as_str().starts_with("access-control-")) {
+            res = res.header(k.as_str(), v.as_bytes());
+        }
+        return res.body(Body::from_stream(up.bytes_stream())).map_err(|e| e.to_string());
     }
-    res.body(Body::from_stream(up.bytes_stream())).map_err(|e| e.to_string())
+    Err("too many redirects".into())
+}
+
+/// Resolves a Location against the current URL (absolute, protocol-relative,
+/// or root-/path-relative).
+fn resolve(base: &str, loc: &str) -> Option<String> {
+    if loc.contains("://") {
+        return Some(loc.to_owned());
+    }
+    if let Some(rest) = loc.strip_prefix("//") {
+        let scheme = base.split("://").next().unwrap_or("https");
+        return Some(format!("{scheme}://{rest}"));
+    }
+    let origin = origin_of(base).to_owned();
+    if let Some(path) = loc.strip_prefix('/') {
+        return Some(format!("{origin}/{path}"));
+    }
+    let dir = base.rsplit_once('/').map(|(d, _)| d).unwrap_or(&origin);
+    Some(format!("{dir}/{loc}"))
 }
 
 /// Binds 127.0.0.1 on a free port and serves the proxy; returns the base URL and the serving task.
@@ -188,6 +269,69 @@ mod tests {
         assert!(!r.headers().contains_key("access-control-allow-origin"));
         // Wrong secret never reaches upstream.
         assert_eq!(c.get(format!("{base}/nope/api/x")).send().await.unwrap().status(), 502);
+    }
+
+    #[tokio::test]
+    async fn redirect_keeps_headers_same_origin_only() {
+        // Evil upstream reflects whether it saw the stored header or Authorization.
+        let evil = Router::new().route(
+            "/probe",
+            get(|h: HeaderMap| async move {
+                let leak = h.contains_key("p-access-token") || h.contains_key(header::AUTHORIZATION);
+                (StatusCode::OK, if leak { "leak" } else { "clean" }).into_response()
+            }),
+        );
+        let el = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let evil_url = format!("http://{}", el.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(el, evil).await.unwrap() });
+
+        let evil_probe = format!("{evil_url}/probe");
+        let up = Router::new()
+            .route(
+                "/api/x",
+                get(|h: HeaderMap| async move {
+                    if h.get("p-access-token").map(|v| v.as_bytes()) != Some(b"s3cret") {
+                        return (StatusCode::UNAUTHORIZED, "no").into_response();
+                    }
+                    (StatusCode::OK, "x").into_response()
+                }),
+            )
+            // Same-origin redirect: stored headers must survive.
+            .route("/redir", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/api/x")]).into_response() }))
+            // Cross-origin redirect: nothing credentialed may ride along.
+            .route("/redir-out", get(move || {
+                let to = evil_probe.clone();
+                async move { (StatusCode::FOUND, [(header::LOCATION, to)]).into_response() }
+            }));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, up).await.unwrap() });
+
+        let p = Proxy::new("abc".into());
+        *p.target.write().unwrap() = Some(Target { url: up_url, headers: vec![("P-Access-Token".into(), "s3cret".into())] });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, p.router()).await.unwrap() });
+
+        let c = reqwest::Client::new();
+        let r = c
+            .get(format!("{base}/abc/redir"))
+            .header(header::AUTHORIZATION, "Bearer sess")
+            .header(header::ORIGIN, "tauri://localhost")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.text().await.unwrap(), "x");
+        let r = c
+            .get(format!("{base}/abc/redir-out"))
+            .header(header::AUTHORIZATION, "Bearer sess")
+            .header(header::ORIGIN, "tauri://localhost")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.text().await.unwrap(), "clean");
     }
 
     #[test]

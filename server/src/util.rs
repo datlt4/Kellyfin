@@ -81,6 +81,45 @@ fn flush_digits(out: &mut String, digits: &mut String) {
     digits.clear();
 }
 
+/// Origins allowed to read API responses. Exact (scheme, host) pairs —
+/// prefix matching would also bless `http://localhost.evil.example`.
+/// Tauri/capacitor/ionic webviews, loopback dev servers and tauri.localhost.
+pub fn origin_allowed(origin: &[u8]) -> bool {
+    let o = match std::str::from_utf8(origin) {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    let (scheme, rest) = match o.split_once("://") {
+        Some(x) => x,
+        None => return false,
+    };
+    let host = rest.split(['/', '?', ':']).next().unwrap_or("");
+    matches!(
+        (scheme, host),
+        ("tauri", "localhost")
+            | ("capacitor", "localhost")
+            | ("ionic", "localhost")
+            | ("http", "localhost")
+            | ("http", "127.0.0.1")
+            | ("http", "[::1]")
+            | ("http", "tauri.localhost")
+            | ("https", "tauri.localhost")
+    )
+}
+
+/// Constant-time comparison: lengths are public, content is not.
+pub fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut d = 0u8;
+    for i in 0..a.len() {
+        d |= a[i] ^ b[i];
+    }
+    d == 0
+}
+
 pub fn random_hex(bytes: usize) -> String {
     use rand::RngCore;
     let mut b = vec![0u8; bytes];
@@ -107,6 +146,35 @@ mod tests {
         assert_eq!(sort_key("Đường"), "duong");
         assert!(sort_key("The Adventure Of TinTin") < sort_key("Âm Mưu ATHENA"));
         assert!(sort_key("12 Days") < sort_key("Adventure"));
+    }
+
+    #[test]
+    fn origin_allows_exact_hosts_only() {
+        for good in [
+            "tauri://localhost",
+            "capacitor://localhost",
+            "ionic://localhost",
+            "http://localhost",
+            "http://localhost:1420",
+            "http://127.0.0.1",
+            "http://127.0.0.1:8080",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+        ] {
+            assert!(origin_allowed(good.as_bytes()), "{good}");
+        }
+        for bad in [
+            "http://localhost.evil.example",
+            "https://tauri.evil.example",
+            "http://127.0.0.1.evil.example",
+            "http://localhost.evil.example:8080",
+            "https://localhost",
+            "file://localhost",
+            "",
+            "null",
+        ] {
+            assert!(!origin_allowed(bad.as_bytes()), "{bad}");
+        }
     }
 
     #[test]

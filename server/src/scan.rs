@@ -175,11 +175,11 @@ pub(crate) fn walk(roots: &[String], lessons_from_subs: bool) -> HashMap<String,
     let mut found = HashMap::new();
     let mut media = std::collections::HashSet::new(); // (folder, stem) of videos and audio files
     let mut subs: Vec<PathBuf> = Vec::new();
-    // Canonical roots: symlinked entries are resolved and must stay under one
-    // of them, otherwise a planted link (`ln -s /etc/passwd film.mp4`) would
-    // make the scanner ingest — and the server then serve — outside files.
-    let croots: Vec<PathBuf> = roots.iter().filter_map(|r| std::fs::canonicalize(r).ok()).collect();
-    let inside = |p: &Path| croots.iter().any(|r| std::fs::canonicalize(p).map(|c| c.starts_with(r)).unwrap_or(false));
+    // Symlinked files and folders are followed as before (many libraries merge
+    // disks this way). This trusts whoever can write the media folders — which
+    // is already full trust — while untrusted inputs stay fenced: library roots
+    // cannot be /, /proc, /etc, ... (admin::valid_root) and manifest item paths
+    // must sit under their library (manifest::check_item_path).
     for root in roots {
         let it = WalkDir::new(root)
             .follow_links(true)
@@ -188,9 +188,6 @@ pub(crate) fn walk(roots: &[String], lessons_from_subs: bool) -> HashMap<String,
         for e in it.flatten() {
             let p = e.path();
             if !e.file_type().is_file() {
-                continue;
-            }
-            if !inside(p) {
                 continue;
             }
             let Some(path) = p.to_str() else { continue };

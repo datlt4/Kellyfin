@@ -231,7 +231,21 @@ pub async fn import(db: &SqlitePool, images_dir: &Path, m: &Manifest, dir: Optio
         }
     }
 
+    // Exports carry no password hashes: a freshly restored user cannot log in
+    // until an admin sets a password. Say so loudly instead of leaving
+    // locked-out accounts behind silently.
+    let mut passwordless = 0;
     for u in &m.users {
+        if u.password_hash.is_none()
+            && sqlx::query_scalar::<_, i64>("SELECT id FROM users WHERE name = ?")
+                .bind(&u.name)
+                .fetch_optional(db)
+                .await?
+                .is_none()
+        {
+            passwordless += 1;
+            tracing::warn!("import: user '{}' has no password and cannot log in until an admin resets it", u.name);
+        }
         let uid: i64 = sqlx::query_scalar(
             "INSERT INTO users (name, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)
              ON CONFLICT (name) DO UPDATE SET password_hash = COALESCE(users.password_hash, excluded.password_hash)
@@ -263,6 +277,9 @@ pub async fn import(db: &SqlitePool, images_dir: &Path, m: &Manifest, dir: Optio
         tx.commit().await?;
     }
 
+    if passwordless > 0 {
+        tracing::warn!("import: {passwordless} user(s) without passwords cannot log in; set one per user in Settings → Users");
+    }
     tracing::info!("rendering {} images", renders.len());
     let sem = Arc::new(Semaphore::new(4));
     let mut set = JoinSet::new();

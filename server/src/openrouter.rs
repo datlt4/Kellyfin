@@ -19,11 +19,13 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use std::sync::Mutex;
 
-/// Domain-separated, stretched wrapper around the env secret. A single raw
-/// SHA-256 of a low-entropy env value is brute-forceable; iterating the hash
-/// (with a versioned domain tag) raises that cost without a new dependency.
-/// Versioned blobs ("v1" magic) keep keys encrypted by older builds readable.
-fn kdf(secret: &str) -> [u8; 32] {
+fn env_secret() -> anyhow::Result<String> {
+    std::env::var("KELLYFIN_OPENROUTER_SECRET")
+        .context("KELLYFIN_OPENROUTER_SECRET is not set; set it in the environment (or the server .env)")
+}
+
+/// v1 key: iterated SHA-256 with a domain tag (no new dependency at the time).
+fn kdf_v1(secret: &str) -> [u8; 32] {
     let mut h = Sha256::digest(format!("kellyfin-openrouter-v1:{secret}").as_bytes());
     for _ in 0..4096 {
         h = Sha256::digest(h);
@@ -31,50 +33,69 @@ fn kdf(secret: &str) -> [u8; 32] {
     h.into()
 }
 
-fn legacy_key() -> anyhow::Result<[u8; 32]> {
-    let v = std::env::var("KELLYFIN_OPENROUTER_SECRET")
-        .context("KELLYFIN_OPENROUTER_SECRET is not set; set it in the environment (or the server .env)")?;
-    Ok(Sha256::digest(v.as_bytes()).into())
+/// v2 key: Argon2id over the env secret with a per-key salt (memory-hard, so a
+/// weak env value resists GPU brute force). New writes always use v2; v1 and
+/// legacy blobs stay decryptable so old rows survive upgrades.
+fn kdf_v2(secret: &str, salt: &[u8]) -> anyhow::Result<[u8; 32]> {
+    let mut out = [0u8; 32];
+    argon2::Argon2::default()
+        .hash_password_into(secret.as_bytes(), salt, &mut out)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(out)
+}
+
+fn legacy_key(secret: &str) -> [u8; 32] {
+    Sha256::digest(secret.as_bytes()).into()
 }
 
 pub async fn encrypt_key(plain: &str) -> anyhow::Result<String> {
-    let cipher = Aes256Gcm::new_from_slice(&kdf(
-        &std::env::var("KELLYFIN_OPENROUTER_SECRET")
-            .context("KELLYFIN_OPENROUTER_SECRET is not set; set it in the environment (or the server .env)")?,
-    ))
-    .context("wrong key length")?;
+    use rand::RngCore;
+    let secret = env_secret()?;
+    let mut salt = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut salt);
+    let cipher = Aes256Gcm::new_from_slice(&kdf_v2(&secret, &salt)?).context("wrong key length")?;
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     let out = cipher.encrypt(&nonce, plain.as_bytes()).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let mut blob = b"v1".to_vec();
+    let mut blob = b"v2".to_vec();
+    blob.extend_from_slice(&salt);
     blob.extend_from_slice(&nonce);
     blob.extend_from_slice(&out);
     Ok(B64.encode(blob))
 }
 
-pub async fn decrypt_key(enc: &str) -> anyhow::Result<String> {
-    let blob = B64.decode(enc).context("stored key is not valid base64")?;
-    // v1 blob: "v1" + 12-byte nonce + ciphertext (16-byte GCM tag minimum).
+fn decrypt_blob(secret: &str, blob: &[u8]) -> anyhow::Result<Vec<u8>> {
+    // v2 blob: "v2" + 16-byte salt + 12-byte nonce + ciphertext (16-byte GCM tag minimum).
+    if let Some(body) = blob.strip_prefix(b"v2".as_slice()) {
+        if body.len() < 16 + 12 + 16 {
+            anyhow::bail!("stored key is too short");
+        }
+        let (salt, rest) = body.split_at(16);
+        let (nonce, ct) = rest.split_at(12);
+        let cipher = Aes256Gcm::new_from_slice(&kdf_v2(secret, salt)?).context("wrong key length")?;
+        return cipher.decrypt(nonce.into(), ct).map_err(|e| anyhow::anyhow!("{e}"));
+    }
+    // v1 blob: "v1" + 12-byte nonce + ciphertext.
     if let Some(body) = blob.strip_prefix(b"v1".as_slice()) {
         if body.len() < 12 + 16 {
             anyhow::bail!("stored key is too short");
         }
-        let secret = std::env::var("KELLYFIN_OPENROUTER_SECRET")
-            .context("KELLYFIN_OPENROUTER_SECRET is not set; set it in the environment (or the server .env)")?;
         let (nonce, ct) = body.split_at(12);
-        let cipher = Aes256Gcm::new_from_slice(&kdf(&secret)).context("wrong key length")?;
-        let pt = cipher.decrypt(nonce.into(), ct).map_err(|e| anyhow::anyhow!("{e}"))?;
-        return Ok(String::from_utf8(pt)?);
+        let cipher = Aes256Gcm::new_from_slice(&kdf_v1(secret)).context("wrong key length")?;
+        return cipher.decrypt(nonce.into(), ct).map_err(|e| anyhow::anyhow!("{e}"));
     }
-    // Legacy blob (single-SHA-256 key, no magic): still decryptable so old
-    // rows survive the upgrade; new writes always use v1.
+    // Legacy blob (single-SHA-256 key, no magic).
     if blob.len() < 12 + 16 {
         anyhow::bail!("stored key is too short");
     }
-    let k = legacy_key()?;
     let (nonce, ct) = blob.split_at(12);
-    let cipher = Aes256Gcm::new_from_slice(&k).context("wrong key length")?;
-    let pt = cipher.decrypt(nonce.into(), ct).map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(String::from_utf8(pt)?)
+    let cipher = Aes256Gcm::new_from_slice(&legacy_key(secret)).context("wrong key length")?;
+    cipher.decrypt(nonce.into(), ct).map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+pub async fn decrypt_key(enc: &str) -> anyhow::Result<String> {
+    let blob = B64.decode(enc).context("stored key is not valid base64")?;
+    let secret = env_secret()?;
+    Ok(String::from_utf8(decrypt_blob(&secret, &blob)?)?)
 }
 
 pub async fn claim_input(st: &crate::AppState, user_id: Option<i64>) -> crate::error::ApiResult<(Option<String>, String, String)> {
@@ -160,8 +181,9 @@ pub async fn put(st: &crate::AppState, user_id: i64, body: Put) -> crate::error:
     let encrypted_key = match (&body.clear_key, &body.key) {
         (Some(true), _) => String::new(),
         (_, Some(k)) => {
-            // The key is stored exactly as typed: trimming it here would
-            // silently mutate the credential the provider expects.
+            // Pasted keys routinely carry a trailing newline or space; provider
+            // keys never contain whitespace, so trimming can only help.
+            let k = k.trim();
             if k.is_empty() {
                 return Err(ApiError::new(StatusCode::BAD_REQUEST, "an empty key clears nothing; use clear_key"));
             }

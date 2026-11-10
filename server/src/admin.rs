@@ -245,6 +245,7 @@ pub async fn update_user(State(st): State<AppState>, _a: Admin, me: User, Path(i
         // Every session of this user dies with the old password (including this
         // admin's own, when resetting themselves: they simply log in again).
         sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(id).execute(&st.db).await?;
+        crate::auth::revoke_media_tokens(&st.db, id).await?;
     }
     if let Some(a) = p.is_admin {
         sqlx::query("UPDATE users SET is_admin = ? WHERE id = ?").bind(a).bind(id).execute(&st.db).await?;
@@ -293,8 +294,9 @@ pub async fn change_password(State(st): State<AppState>, u: User, Json(p): Json<
         return Err(bad("current password is wrong"));
     }
     sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?").bind(hash_password(&p.new)?).bind(u.id).execute(&st.db).await?;
-    // The password changed: all sessions (this one included) are revoked.
+    // The password changed: all sessions (this one included) and media tokens are revoked.
     sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(u.id).execute(&st.db).await?;
+    crate::auth::revoke_media_tokens(&st.db, u.id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -350,18 +352,32 @@ pub struct LibBody {
 /// A library root must be absolute, contain no `..`, and stay out of the
 /// OS itself: a library pointing at `/`, `/proc` or `/etc` would make the
 /// scanner walk (and then serve) the whole machine.
+/// A path is blocked when it is the OS itself or dives under it. Desktop
+/// automounts (/run/media/<user>/<disk>, gvfs under /run/user) are allowed:
+/// USB drives would otherwise be impossible to add on Linux desktops.
+fn blocked(p: &str) -> bool {
+    for bad in ["/proc", "/sys", "/dev", "/etc", "/root", "/boot", "/var/log", "/var/run", "/run"] {
+        if p == bad || p.starts_with(&format!("{bad}/")) {
+            // Carve-outs inside /run for removable media.
+            if p.starts_with("/run/media/") || p.contains("/run/user/") {
+                return false;
+            }
+            return true;
+        }
+    }
+    false
+}
+
 pub fn valid_root(p: &str) -> bool {
     if !p.starts_with('/') || p.contains("/../") || p.ends_with("/..") || p == "/.." || p == "/" {
         return false;
     }
-    for bad in ["/proc", "/sys", "/dev", "/etc", "/root", "/run", "/var/run", "/boot", "/var/log"] {
-        if p == bad || p.starts_with(&format!("{bad}/")) {
-            return false;
-        }
+    if blocked(p) {
+        return false;
     }
     if let Ok(canon) = std::fs::canonicalize(p) {
         let c = canon.to_string_lossy();
-        if ["/proc", "/sys", "/dev", "/etc"].iter().any(|b| c == *b || c.starts_with(&format!("{b}/"))) {
+        if blocked(&c) {
             return false;
         }
     }

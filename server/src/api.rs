@@ -1,7 +1,7 @@
 use crate::{
     auth::{self, Admin, User},
     error::{ApiError, ApiResult},
-    admin, images, narration, openrouter, recommend, repair, scan, settings, stream, transcode, upscale, AppState,
+    admin, images, narration, openrouter, recommend, repair, scan, settings, stream, transcode, upscale, util, AppState,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -26,6 +26,7 @@ pub fn router(st: AppState) -> Router {
         .route("/health", get(health))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
+        .route("/auth/media", post(auth::media))
         .route("/me", get(admin::me))
         .route("/me/password", post(admin::change_password))
         .route("/me/avatar", put(admin::set_avatar).delete(admin::delete_avatar))
@@ -109,24 +110,14 @@ pub fn router(st: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_methods(AllowMethods::list([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS]))
         .allow_headers(AllowHeaders::list([header::AUTHORIZATION, header::CONTENT_TYPE, header::RANGE]))
-        .allow_origin(AllowOrigin::predicate(|origin, _| {
-            let o = origin.as_bytes();
-            o.starts_with(b"tauri://")
-                || o.starts_with(b"capacitor://")
-                || o.starts_with(b"http://localhost")
-                || o.starts_with(b"http://127.0.0.1")
-                || o.starts_with(b"http://tauri.")
-                || o.starts_with(b"https://tauri.")
-        }));
+        .allow_origin(AllowOrigin::predicate(|origin, _| util::origin_allowed(origin.as_bytes())));
     let api = api.merge(media).layer(cors);
 
-    // Thumbnails carry ?v=<version> and the session ?t=<token> (<img> cannot
-    // send headers), and require a login: unlike the old public /img tree,
-    // IDs can no longer be enumerated anonymously.
-    let img_routes = Router::new()
-        .route("/img/{*path}", get(images::file))
-        .layer(SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, IMMUTABLE));
-    let mut app = Router::new().nest("/api", api).merge(img_routes);
+    // Thumbnails carry ?v=<version> and the scoped ?t=<media token> (<img>
+    // cannot send headers), and require a login: unlike the old public /img
+    // tree, IDs can no longer be enumerated anonymously. Cache headers are set
+    // in the handler, per status (errors must never be immutable).
+    let mut app = Router::new().nest("/api", api).route("/img/{*path}", get(images::file));
 
     if let Some(web) = &st.cfg.web {
         let assets = ServeDir::new(web.join("assets"));

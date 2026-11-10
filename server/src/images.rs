@@ -80,11 +80,22 @@ pub async fn file(State(st): State<AppState>, _u: MediaUser, RoutePath(path): Ro
     }
     let full = st.images.join(kind).join(id).join(variant);
     let req = Request::builder().uri("/").body(Body::empty()).map_err(anyhow::Error::from)?;
-    tower_http::services::ServeFile::new(full)
-        .oneshot(req)
-        .await
-        .map(|r| r.map(Body::new).into_response())
-        .map_err(|e| anyhow::anyhow!(e).into())
+    // ServeFile::oneshot never fails (missing files become 404 responses).
+    let mut res = tower_http::services::ServeFile::new(full).oneshot(req).await.map(|r| r.map(Body::new).into_response()).unwrap();
+    // Immutable only for the bytes themselves: a 401/404 must never be cached
+    // (a thumbnail that does not exist yet would stick for a year).
+    if res.status().is_success() {
+        res.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    } else {
+        res.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+    }
+    Ok(res)
 }
 
 /// Grabs a frame at 10% of the video (max 5 min in) as thumbnail, without its black bars.
