@@ -164,6 +164,12 @@ pub const MEDIA_TTL: i64 = SESSION_TTL;
 /// for rows created before hashing (expires_at = 0) and migrates them; a hash
 /// copied out of the database never matches, in either position.
 async fn lookup(db: &SqlitePool, presented: &str) -> Option<User> {
+    lookup_full(db, presented).await.map(|(u, _)| u)
+}
+
+/// Like lookup, but also returns the stored session value so media tokens can
+/// bind to the exact session row (logout deletes it, the tokens cascade).
+async fn lookup_full(db: &SqlitePool, presented: &str) -> Option<(User, String)> {
     let hash = token_hash(presented);
     let row = sqlx::query_as::<_, (i64, String, bool, String, i64)>(
         "SELECT u.id, u.name, u.is_admin, s.token, s.expires_at FROM sessions s
@@ -187,8 +193,15 @@ async fn lookup(db: &SqlitePool, presented: &str) -> Option<User> {
             .bind(&stored)
             .execute(db)
             .await;
+        // Media tokens bound to the raw value follow it (else they dangle).
+        let _ = sqlx::query("UPDATE media_tokens SET session_token = ? WHERE session_token = ?")
+            .bind(&hash)
+            .bind(&stored)
+            .execute(db)
+            .await;
+        return Some((User { id, name, is_admin }, hash));
     }
-    Some(User { id, name, is_admin })
+    Some((User { id, name, is_admin }, stored))
 }
 
 impl FromRequestParts<AppState> for User {
@@ -209,15 +222,25 @@ impl FromRequestParts<AppState> for User {
     }
 }
 
-/// Issues a scoped media token for a user (stored hashed, like sessions).
+/// Issues a scoped media token for a user, bound to one session row.
 /// Media elements cannot send headers, so `<video>`, `<track>` and `<img>`
 /// carry this in `?t=` instead of the session token: a URL that leaks into a
 /// log or a Cast device can only ever fetch media bytes, never the JSON API.
-pub async fn issue_media_token(db: &SqlitePool, user_id: i64) -> anyhow::Result<String> {
+/// Rotation, not accumulation: any older token of the same session is revoked.
+/// The session row owns the token (ON DELETE CASCADE), so logout and password
+/// changes kill it without a separate sweep. Scope is the user, not the item:
+/// per-URL signatures would be needed for that (deferred).
+pub async fn issue_media_token(db: &SqlitePool, user_id: i64, session_token: &str) -> anyhow::Result<String> {
+    sqlx::query("DELETE FROM media_tokens WHERE user_id = ? AND session_token = ?")
+        .bind(user_id)
+        .bind(session_token)
+        .execute(db)
+        .await?;
     let token = random_hex(32);
-    sqlx::query("INSERT INTO media_tokens (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    sqlx::query("INSERT INTO media_tokens (token_hash, user_id, session_token, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
         .bind(token_hash(&token))
         .bind(user_id)
+        .bind(session_token)
         .bind(now())
         .bind(now() + MEDIA_TTL)
         .execute(db)
@@ -358,7 +381,7 @@ pub async fn login(State(st): State<AppState>, Json(req): Json<Login>) -> ApiRes
         .bind(now() + SESSION_TTL)
         .execute(&st.db)
         .await?;
-    let media_token = issue_media_token(&st.db, id).await?;
+    let media_token = issue_media_token(&st.db, id, &token_hash(&token)).await?;
     // Opportunistic GC; keeps the tables from growing forever.
     let _ = sqlx::query("DELETE FROM sessions WHERE expires_at > 0 AND expires_at < ?").bind(now()).execute(&st.db).await;
     let _ = sqlx::query("DELETE FROM media_tokens WHERE expires_at > 0 AND expires_at < ?").bind(now()).execute(&st.db).await;
@@ -368,8 +391,15 @@ pub async fn login(State(st): State<AppState>, Json(req): Json<Login>) -> ApiRes
 /// Mints a fresh scoped media token for the current session (used on page
 /// reload: the media token lives in localStorage, the session in a cookie-less
 /// header, and a server upgrade must not force everyone to re-login).
-pub async fn media(State(st): State<AppState>, u: User) -> ApiResult<Json<serde_json::Value>> {
-    let media_token = issue_media_token(&st.db, u.id).await?;
+pub async fn media(State(st): State<AppState>, headers: HeaderMap) -> ApiResult<Json<serde_json::Value>> {
+    let unauthorized = || ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized");
+    let presented = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(unauthorized)?;
+    let (u, stored) = lookup_full(&st.db, presented).await.ok_or_else(unauthorized)?;
+    let media_token = issue_media_token(&st.db, u.id, &stored).await?;
     Ok(Json(serde_json::json!({ "media_token": media_token })))
 }
 

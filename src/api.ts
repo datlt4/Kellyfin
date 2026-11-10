@@ -289,10 +289,18 @@ export async function restore(): Promise<boolean> {
     try {
       const r = await api<{ media_token: string }>("/auth/media", { method: "POST" });
       mediaToken = r.media_token;
-    } catch {
-      mediaToken = token; // pre-scoping server: it still takes the session in ?t=
+      save(mediaKey(), mediaToken);
+    } catch (e) {
+      // Old server without the endpoint: fall back in memory only, never
+      // persisted — a saved session token as mtoken would 401 everything
+      // after the next upgrade until a re-login. Anything else (notably the
+      // 401 api() already turned into a dropped session) means give up.
+      if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
+        mediaToken = token;
+      } else {
+        return false;
+      }
     }
-    save(mediaKey(), mediaToken);
   }
   setUnreachable(null);
   // An unreachable address can hang for a minute or more: give up after 8 s.

@@ -56,7 +56,21 @@ fn cors(origin: Option<&HeaderValue>, h: &mut HeaderMap) {
             Some(x) => x,
             None => return false,
         };
-        let host = rest.split(['/', '?', ':']).next().unwrap_or("");
+        // Bracketed IPv6 keeps its colons: [::1]:8080/path -> [::1]. The bracket
+        // must close before any host character: [::1].evil.example is rejected.
+        let host: &str = match rest.strip_prefix('[') {
+            Some(after) => match after.find(']') {
+                Some(end) => {
+                    let tail = &after[end + 1..];
+                    if !(tail.is_empty() || tail.starts_with(['/', '?', ':'])) {
+                        return false;
+                    }
+                    &rest[..end + 2]
+                }
+                None => return false,
+            },
+            None => rest.split(['/', '?', ':']).next().unwrap_or(""),
+        };
         matches!(
             (scheme, host),
             ("tauri", "localhost")
@@ -201,7 +215,10 @@ fn resolve(base: &str, loc: &str) -> Option<String> {
     if let Some(path) = loc.strip_prefix('/') {
         return Some(format!("{origin}/{path}"));
     }
-    let dir = base.rsplit_once('/').map(|(d, _)| d).unwrap_or(&origin);
+    // The base query may itself contain '/': cut it (and any fragment) before
+    // taking the directory, or "other" would join onto the query string.
+    let bare = base.split(['?', '#']).next().unwrap_or(base);
+    let dir = bare.rsplit_once('/').map(|(d, _)| d).unwrap_or(&origin);
     Some(format!("{dir}/{loc}"))
 }
 

@@ -359,7 +359,7 @@ fn blocked(p: &str) -> bool {
     for bad in ["/proc", "/sys", "/dev", "/etc", "/root", "/boot", "/var/log", "/var/run", "/run"] {
         if p == bad || p.starts_with(&format!("{bad}/")) {
             // Carve-outs inside /run for removable media.
-            if p.starts_with("/run/media/") || p.contains("/run/user/") {
+            if p.starts_with("/run/media/") || p.starts_with("/run/user/") {
                 return false;
             }
             return true;

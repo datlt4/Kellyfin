@@ -93,7 +93,21 @@ pub fn origin_allowed(origin: &[u8]) -> bool {
         Some(x) => x,
         None => return false,
     };
-    let host = rest.split(['/', '?', ':']).next().unwrap_or("");
+    // Bracketed IPv6 keeps its colons: [::1]:8080/path -> [::1]. The bracket
+    // must close before any host character: [::1].evil.example is rejected.
+    let host: &str = match rest.strip_prefix('[') {
+        Some(after) => match after.find(']') {
+            Some(end) => {
+                let tail = &after[end + 1..];
+                if !(tail.is_empty() || tail.starts_with(['/', '?', ':'])) {
+                    return false;
+                }
+                &rest[..end + 2]
+            }
+            None => return false,
+        },
+        None => rest.split(['/', '?', ':']).next().unwrap_or(""),
+    };
     matches!(
         (scheme, host),
         ("tauri", "localhost")
@@ -160,6 +174,8 @@ mod tests {
             "http://127.0.0.1:8080",
             "http://tauri.localhost",
             "https://tauri.localhost",
+            "http://[::1]",
+            "http://[::1]:8080",
         ] {
             assert!(origin_allowed(good.as_bytes()), "{good}");
         }
@@ -170,6 +186,8 @@ mod tests {
             "http://localhost.evil.example:8080",
             "https://localhost",
             "file://localhost",
+            "http://[::1].evil.example",
+            "http://[::1",
             "",
             "null",
         ] {
