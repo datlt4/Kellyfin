@@ -1,4 +1,4 @@
-import { A, useParams } from "@solidjs/router";
+import { A, Navigate, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
 import {
   activeServer, api, ApiError, appVersion, fmtClock, img, isTauri, refreshUser, serverVersion, upload, user,
@@ -971,6 +971,7 @@ const TABS = [
 
 export default function Settings() {
   const params = useParams();
+  if (!user()) return <Navigate href="/login" />;
   const tabs = () => TABS.filter((t) => !t.admin || user()?.is_admin);
   const tab = () => tabs().find((t) => t.id === params.tab) ?? tabs()[0];
   return (

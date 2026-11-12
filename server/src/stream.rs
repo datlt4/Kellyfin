@@ -1,6 +1,6 @@
 //! Playback: direct file (HTTP range), copy-remux to fragmented MP4 (audio track pick, mkv), subtitles as WebVTT.
 use crate::{
-    auth::{MediaUser, User},
+    auth::{visible, OptMedia, User},
     error::{ApiError, ApiResult},
     util, AppState,
 };
@@ -22,12 +22,19 @@ const SUB_EXT: &[&str] = &["srt", "vtt", "ass", "ssa"];
 const TEXT_SUBS: &[&str] = &["subrip", "ass", "ssa", "webvtt", "mov_text", "text"];
 
 async fn item_path(st: &AppState, id: i64) -> ApiResult<String> {
-    Ok(sqlx::query_scalar("SELECT path FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?)
+    Ok(item_file(st, id).await?.0)
+}
+
+/// File path plus restriction flag. Every byte-serving handler gates on it:
+/// restricted items need a signed-in user (any user, not just admin).
+async fn item_file(st: &AppState, id: i64) -> ApiResult<(String, bool)> {
+    Ok(sqlx::query_as("SELECT path, restricted FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?)
 }
 
 /// Original file with range support: zero CPU, instant seeking.
-pub async fn file(State(st): State<AppState>, _u: MediaUser, Path(id): Path<i64>, req: Request) -> ApiResult<Response> {
-    let path = item_path(&st, id).await?;
+pub async fn file(State(st): State<AppState>, u: OptMedia, Path(id): Path<i64>, req: Request) -> ApiResult<Response> {
+    let (path, restricted) = item_file(&st, id).await?;
+    visible(restricted, &u.0)?;
     let res = ServeFile::new(path).oneshot(req).await.map_err(|e| anyhow::anyhow!(e))?;
     Ok(res.map(Body::new).into_response())
 }
@@ -38,8 +45,9 @@ pub struct KeyframeQ {
 }
 
 /// Keyframe at or before `at`; a copy-remux can only start there.
-pub async fn keyframe(State(st): State<AppState>, _u: MediaUser, Path(id): Path<i64>, Query(q): Query<KeyframeQ>) -> ApiResult<Json<f64>> {
-    let path = item_path(&st, id).await?;
+pub async fn keyframe(State(st): State<AppState>, u: OptMedia, Path(id): Path<i64>, Query(q): Query<KeyframeQ>) -> ApiResult<Json<f64>> {
+    let (path, restricted) = item_file(&st, id).await?;
+    visible(restricted, &u.0)?;
     if q.at <= 0.0 {
         return Ok(Json(0.0));
     }
@@ -71,9 +79,10 @@ pub struct RemuxQ {
 }
 
 /// Video copied as-is, chosen audio (copied when the client can decode it, else AAC stereo), streamed as fragmented MP4.
-pub async fn remux(State(st): State<AppState>, _u: MediaUser, Path(id): Path<i64>, Query(q): Query<RemuxQ>) -> ApiResult<Response> {
-    let (path, video_codec, streams): (String, Option<String>, Option<String>) =
-        sqlx::query_as("SELECT path, video_codec, streams FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
+pub async fn remux(State(st): State<AppState>, u: OptMedia, Path(id): Path<i64>, Query(q): Query<RemuxQ>) -> ApiResult<Response> {
+    let (path, video_codec, streams, restricted): (String, Option<String>, Option<String>, bool) =
+        sqlx::query_as("SELECT path, video_codec, streams, restricted FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
+    visible(restricted, &u.0)?;
     let streams: Vec<Value> = streams.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let audio = match q.audio {
         Some(i) => streams.iter().find(|s| s["index"] == i && s["type"] == "audio"),
@@ -245,7 +254,9 @@ pub async fn subtitle_source(st: &AppState, id: i64, key: &str) -> ApiResult<(St
 }
 
 /// WebVTT for one subtitle track. Embedded tracks are cached since extracting reads the whole file.
-pub async fn subtitle(State(st): State<AppState>, _u: MediaUser, Path((id, key)): Path<(i64, String)>) -> ApiResult<Response> {
+pub async fn subtitle(State(st): State<AppState>, u: OptMedia, Path((id, key)): Path<(i64, String)>) -> ApiResult<Response> {
+    let restricted: bool = sqlx::query_scalar("SELECT restricted FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
+    visible(restricted, &u.0)?;
     let (input, map, cache) = subtitle_source(&st, id, key.trim_end_matches(".vtt")).await?;
     if let Some(c) = &cache {
         if let Ok(v) = tokio::fs::read(c).await {

@@ -9,6 +9,7 @@ import Item from "./pages/Item";
 import Settings from "./pages/Settings";
 import Player from "./pages/Player";
 import Search from "./pages/Search";
+import Login from "./pages/Login";
 
 render(
   () => (
@@ -18,6 +19,7 @@ render(
       <Route path="/item/:id" component={Item} />
       <Route path="/settings/:tab?" component={Settings} />
       <Route path="/search" component={Search} />
+      <Route path="/login" component={Login} />
       <Route path="/play/:id" component={Player} />
     </Router>
   ),

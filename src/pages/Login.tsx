@@ -1,3 +1,4 @@
+import { useNavigate } from "@solidjs/router";
 import { createSignal, For, Show } from "solid-js";
 import Select from "../components/Select";
 import { serverVersion } from "../api";
@@ -93,12 +94,14 @@ export default function Login() {
     await restore(); // signs straight in when this server still has a session
   };
 
+  const nav = useNavigate();
   const submit = async (e: Event) => {
     e.preventDefault();
     setErr("");
     setBusy(true);
     try {
       await login(name(), pw());
+      nav("/");
     } catch (x) {
       setErr(x instanceof Error ? x.message : String(x));
     } finally {

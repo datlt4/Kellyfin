@@ -38,6 +38,9 @@ pub struct Item {
     pub title: Option<String>,
     pub added_at: Option<i64>,
     pub image: Option<String>,
+    /// Missing in old exports: public.
+    #[serde(default)]
+    pub restricted: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -110,20 +113,21 @@ pub async fn collect(db: &SqlitePool, images_dir: &Path, out: Option<&Path>) -> 
     let libs: Vec<(i64, String, String)> = sqlx::query_as("SELECT id, name, kind FROM libraries").fetch_all(db).await?;
     for (id, name, kind) in libs {
         let paths = sqlx::query_scalar("SELECT path FROM library_paths WHERE library_id = ?").bind(id).fetch_all(db).await?;
-        let rows: Vec<(i64, String, String, bool, i64, bool)> = sqlx::query_as(
-            "SELECT id, path, title, title_locked, added_at, image_locked FROM items WHERE library_id = ?",
+        let rows: Vec<(i64, String, String, bool, i64, bool, bool)> = sqlx::query_as(
+            "SELECT id, path, title, title_locked, added_at, image_locked, restricted FROM items WHERE library_id = ?",
         )
         .bind(id)
         .fetch_all(db)
         .await?;
         let items = rows
             .into_iter()
-            .map(|(iid, path, title, locked, added_at, img_locked)| Item {
+            .map(|(iid, path, title, locked, added_at, img_locked, restricted)| Item {
                 title: locked.then_some(title),
                 added_at: Some(added_at),
                 // Frame grabs are regenerated on scan; only custom images travel.
                 image: if img_locked { copy("item", iid) } else { None },
                 path,
+                restricted,
             })
             .collect();
         m.libraries.push(Library { image: copy("lib", id), name, kind, paths, items });
@@ -206,9 +210,9 @@ pub async fn import(db: &SqlitePool, images_dir: &Path, m: &Manifest, dir: Optio
             check_item_path(&roots, &path)?;
             let title = it.title.clone().unwrap_or_else(|| util::file_stem(&path));
             let id: i64 = sqlx::query_scalar(
-                "INSERT INTO items (library_id, path, title, title_locked, sort_title, added_at) VALUES (?, ?, ?, ?, ?, ?)
+                "INSERT INTO items (library_id, path, title, title_locked, sort_title, added_at, restricted) VALUES (?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT (library_id, path) DO UPDATE SET title = excluded.title, title_locked = excluded.title_locked,
-                   sort_title = excluded.sort_title, added_at = excluded.added_at
+                   sort_title = excluded.sort_title, added_at = excluded.added_at, restricted = excluded.restricted
                  RETURNING id",
             )
             .bind(lib_id)
@@ -217,6 +221,7 @@ pub async fn import(db: &SqlitePool, images_dir: &Path, m: &Manifest, dir: Optio
             .bind(it.title.is_some())
             .bind(util::sort_key(&title))
             .bind(it.added_at.unwrap_or(now))
+            .bind(it.restricted)
             .fetch_one(&mut *tx)
             .await?;
             if let (Some(img), Some(dir)) = (&it.image, dir) {

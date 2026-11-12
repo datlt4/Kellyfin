@@ -208,8 +208,8 @@ impl FromRequestParts<AppState> for User {
     type Rejection = ApiError;
 
     /// API identity: the token comes from the Authorization header only.
-    /// Query tokens (?t=) are accepted solely by MediaUser below, so a token
-    /// that leaks into a URL can only ever fetch media bytes, never the API.
+    /// Query tokens (?t=) are never accepted here: they only ever fetch media
+    /// bytes (OptMedia), never the JSON API.
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         let unauthorized = || ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized");
         let token = parts
@@ -289,40 +289,59 @@ async fn lookup_legacy_session(db: &SqlitePool, presented: &str) -> Option<User>
     Some(User { id, name, is_admin })
 }
 
-/// Identity for media bytes. Accepts the `?t=` media token (or a Bearer
-/// session for callers that have one); never the session token from a URL.
-pub struct MediaUser(pub User);
+/// Optional API identity: Some(user) with a valid Bearer session, None for
+/// anonymous visitors. Public routes take this and gate restricted content
+/// per item instead of rejecting at the door.
+pub struct OptUser(pub Option<User>);
 
-impl std::ops::Deref for MediaUser {
-    type Target = User;
-    fn deref(&self) -> &User {
-        &self.0
+impl FromRequestParts<AppState> for OptUser {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let u = parts
+            .headers
+            .get(AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+        match u {
+            Some(t) => Ok(OptUser(lookup(&state.db, t).await)),
+            None => Ok(OptUser(None)),
+        }
     }
 }
 
-impl FromRequestParts<AppState> for MediaUser {
-    type Rejection = ApiError;
+/// Optional media identity: session Bearer, `?t=` media token, or nothing.
+/// Old `?t=` session tokens (pre-scoping) still work while unmigrated.
+pub struct OptMedia(pub Option<User>);
+
+impl FromRequestParts<AppState> for OptMedia {
+    type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let unauthorized = || ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized");
         if let Some(h) = parts
             .headers
             .get(AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
         {
-            // A header session is as good as a media token for media bytes.
             if let Some(u) = lookup(&state.db, h).await {
-                return Ok(MediaUser(u));
+                return Ok(OptMedia(Some(u)));
             }
         }
-        let token = parts
-            .uri
-            .query()
-            .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("t=")))
-            .ok_or_else(unauthorized)?;
-        lookup_media(&state.db, token).await.map(MediaUser).ok_or_else(unauthorized)
+        let t = parts.uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("t=")));
+        match t {
+            Some(tok) => Ok(OptMedia(lookup_media(&state.db, tok).await)),
+            None => Ok(OptMedia(None)),
+        }
     }
+}
+
+/// Anonymous visitors see only unrestricted items; anyone signed in sees all.
+pub fn visible(restricted: bool, u: &Option<User>) -> ApiResult<()> {
+    if restricted && u.is_none() {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "sign in to view this"));
+    }
+    Ok(())
 }
 
 impl FromRequestParts<AppState> for Admin {

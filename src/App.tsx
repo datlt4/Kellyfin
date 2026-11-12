@@ -1,11 +1,10 @@
 import { useLocation } from "@solidjs/router";
 import { createResource, Match, Show, Switch, type ParentProps } from "solid-js";
-import { isTauri, restore, user } from "./api";
+import { isTauri, restore } from "./api";
 import TopBar from "./components/TopBar";
 import UpdateBanner from "./components/UpdateBanner";
 import Toast from "./components/Toast";
 import { autoCheck } from "./update";
-import Login from "./pages/Login";
 import { pullToRefresh } from "./pull";
 
 // The desktop apps have no browser reload: F5 / Ctrl+R / Cmd+R do it.
@@ -26,10 +25,7 @@ export default function App(props: ParentProps) {
       <Match when={ready.loading}>
         <div class="splash" />
       </Match>
-      <Match when={!user()}>
-        <Login />
-      </Match>
-      <Match when={user()}>
+      <Match when={true}>
         <Show when={!loc.pathname.startsWith("/play/")} fallback={props.children}>
           <TopBar />
           <UpdateBanner />

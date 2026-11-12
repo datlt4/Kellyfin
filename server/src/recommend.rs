@@ -1,7 +1,7 @@
 //! Name-based suggestions: related series, the next season, and search.
 use crate::{
-    api::{Card, LibCard, CARD, LIB_CARD},
-    auth::User,
+    api::{lib_card, vis, Card, LibCard, CARD},
+    auth::{visible, OptUser},
     error::ApiResult,
     util, AppState,
 };
@@ -74,13 +74,14 @@ pub struct Related {
 }
 
 /// Libraries and videos elsewhere whose names share words with this one's show and title.
-pub async fn related(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> ApiResult<Json<Related>> {
-    let (lib_id, title, lib_name): (i64, String, String) = sqlx::query_as(
-        "SELECT i.library_id, i.title, l.name FROM items i JOIN libraries l ON l.id = i.library_id WHERE i.id = ?",
+pub async fn related(State(st): State<AppState>, user: OptUser, Path(id): Path<i64>) -> ApiResult<Json<Related>> {
+    let (lib_id, title, lib_name, restricted): (i64, String, String, bool) = sqlx::query_as(
+        "SELECT i.library_id, i.title, l.name, i.restricted FROM items i JOIN libraries l ON l.id = i.library_id WHERE i.id = ?",
     )
     .bind(id)
     .fetch_one(&st.db)
     .await?;
+    visible(restricted, &user.0)?;
     let show = tokens(&lib_name);
     let base: HashSet<String> = show.union(&tokens(&title)).cloned().collect();
 
@@ -100,11 +101,13 @@ pub async fn related(State(st): State<AppState>, user: User, Path(id): Path<i64>
     let mut shown = HashSet::from([lib_id]);
     for (_, lid) in scored.into_iter().take(12) {
         shown.insert(lid);
-        libraries.push(sqlx::query_as(&format!("{LIB_CARD} WHERE l.id = ?")).bind(lid).fetch_one(&st.db).await?);
+        libraries.push(sqlx::query_as(&format!("{} WHERE l.id = ?", lib_card(user.0.is_none()))).bind(lid).fetch_one(&st.db).await?);
     }
 
     // Videos from libraries already suggested above would only repeat them.
-    let items: Vec<(i64, i64, String)> = sqlx::query_as("SELECT id, library_id, title FROM items").fetch_all(&st.db).await?;
+    let v = vis(&user.0);
+    let items: Vec<(i64, i64, String)> =
+        sqlx::query_as(&format!("SELECT id, library_id, title FROM items i WHERE 1 = 1 {v}")).fetch_all(&st.db).await?;
     let mut scored: Vec<(f64, i64)> = items
         .iter()
         .filter(|(_, lid, _)| !shown.contains(lid))
@@ -114,7 +117,7 @@ pub async fn related(State(st): State<AppState>, user: User, Path(id): Path<i64>
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     let mut cards = vec![];
     for (_, iid) in scored.into_iter().take(16) {
-        cards.push(sqlx::query_as(&format!("{CARD} WHERE i.id = ?2")).bind(user.id).bind(iid).fetch_one(&st.db).await?);
+        cards.push(sqlx::query_as(&format!("{CARD} WHERE i.id = ?2 {v}")).bind(crate::api::uid(&user.0)).bind(iid).fetch_one(&st.db).await?);
     }
     Ok(Json(Related { libraries, items: cards }))
 }
@@ -131,7 +134,7 @@ pub struct SearchResult {
 }
 
 /// Every word must appear in the title; accents, case and number padding are ignored ("tap 1" ≠ "tập 10").
-pub async fn search(State(st): State<AppState>, user: User, Query(q): Query<SearchQ>) -> ApiResult<Json<SearchResult>> {
+pub async fn search(State(st): State<AppState>, user: OptUser, Query(q): Query<SearchQ>) -> ApiResult<Json<SearchResult>> {
     let words: Vec<String> = util::fold(&q.q)
         .split_whitespace()
         .map(|w| format!("%{}%", util::sort_key(w).replace('%', "").replace('_', "")))
@@ -142,15 +145,15 @@ pub async fn search(State(st): State<AppState>, user: User, Query(q): Query<Sear
     }
     let cond = |col: &str, first: usize| (0..words.len()).map(|i| format!("{col} LIKE ?{}", i + first)).collect::<Vec<_>>().join(" AND ");
 
-    let sql = format!("{LIB_CARD} WHERE {} ORDER BY l.sort_name LIMIT 30", cond("l.sort_name", 1));
+    let sql = format!("{} WHERE {} ORDER BY l.sort_name LIMIT 30", lib_card(user.0.is_none()), cond("l.sort_name", 1));
     let mut lq = sqlx::query_as(&sql);
     for w in &words {
         lq = lq.bind(w);
     }
     let libraries = lq.fetch_all(&st.db).await?;
 
-    let sql = format!("{CARD} WHERE {} ORDER BY i.sort_title LIMIT 100", cond("i.sort_title", 2));
-    let mut iq = sqlx::query_as(&sql).bind(user.id);
+    let sql = format!("{CARD} WHERE {} {}ORDER BY i.sort_title LIMIT 100", cond("i.sort_title", 2), vis(&user.0));
+    let mut iq = sqlx::query_as(&sql).bind(crate::api::uid(&user.0));
     for w in &words {
         iq = iq.bind(w);
     }

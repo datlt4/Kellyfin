@@ -463,6 +463,8 @@ pub async fn delete_library_image(State(st): State<AppState>, _a: Admin, Path(id
 pub struct ItemPatch {
     /// None or empty: back to the file name.
     title: Option<String>,
+    /// Mark the movie restricted (signed-in users only) or public again.
+    restricted: Option<bool>,
 }
 
 pub async fn update_item(State(st): State<AppState>, _a: Admin, Path(id): Path<i64>, Json(p): Json<ItemPatch>) -> ApiResult<StatusCode> {
@@ -476,6 +478,9 @@ pub async fn update_item(State(st): State<AppState>, _a: Admin, Path(id): Path<i
         .bind(id)
         .execute(&st.db)
         .await?;
+    if let Some(r) = p.restricted {
+        sqlx::query("UPDATE items SET restricted = ? WHERE id = ?").bind(r).bind(id).execute(&st.db).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

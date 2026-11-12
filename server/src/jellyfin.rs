@@ -80,7 +80,7 @@ pub async fn export(url: &str, key: &str, out: &Path) -> anyhow::Result<()> {
                     downloads.push((format!("/Items/{id}/Images/Primary?tag={tag}"), rel.clone()));
                     rel
                 });
-                Some(Item { path, title, added_at: date(&it["DateCreated"]), image })
+                Some(Item { path, title, added_at: date(&it["DateCreated"]), image, restricted: false })
             })
             .collect::<Vec<_>>();
         let image = vf["PrimaryImageItemId"].as_str().map(|id| {

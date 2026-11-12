@@ -1,5 +1,5 @@
 use crate::{
-    auth::{self, Admin, User},
+    auth::{self, Admin, OptUser, User},
     error::{ApiError, ApiResult},
     admin, images, narration, openrouter, recommend, repair, scan, settings, stream, transcode, upscale, util, AppState,
 };
@@ -171,14 +171,29 @@ pub struct LibCard {
     color: Option<String>,
 }
 
-// Libraries without their own image borrow their first item's.
-pub const LIB_CARD: &str = "SELECT l.id, l.name, l.kind,
-    (SELECT COUNT(*) FROM items WHERE library_id = l.id) AS count,
+/// Anonymous visitors must not see restricted items at all: counts skip
+/// them and borrowed thumbnails come from unrestricted items only.
+pub fn lib_card(anon: bool) -> String {
+    let r = if anon { "AND restricted = 0 " } else { "" };
+    format!(
+        "SELECT l.id, l.name, l.kind,
+    (SELECT COUNT(*) FROM items WHERE library_id = l.id {r}) AS count,
     CASE WHEN l.image_ver IS NOT NULL THEN '/img/lib/' || l.id || '/'
-         ELSE (SELECT '/img/item/' || id || '/' FROM items WHERE library_id = l.id AND image_ver IS NOT NULL ORDER BY sort_title, id LIMIT 1) END AS img,
-    COALESCE(l.image_ver, (SELECT image_ver FROM items WHERE library_id = l.id AND image_ver IS NOT NULL ORDER BY sort_title, id LIMIT 1)) AS imgv,
-    COALESCE(l.color, (SELECT color FROM items WHERE library_id = l.id AND image_ver IS NOT NULL ORDER BY sort_title, id LIMIT 1)) AS color
-    FROM libraries l";
+         ELSE (SELECT '/img/item/' || id || '/' FROM items WHERE library_id = l.id AND image_ver IS NOT NULL {r}ORDER BY sort_title, id LIMIT 1) END AS img,
+    COALESCE(l.image_ver, (SELECT image_ver FROM items WHERE library_id = l.id AND image_ver IS NOT NULL {r}ORDER BY sort_title, id LIMIT 1)) AS imgv,
+    COALESCE(l.color, (SELECT color FROM items WHERE library_id = l.id AND image_ver IS NOT NULL {r}ORDER BY sort_title, id LIMIT 1)) AS color
+    FROM libraries l"
+    )
+}
+
+/// Extra WHERE fragment hiding restricted items from anonymous visitors.
+pub fn vis(u: &Option<User>) -> &'static str {
+    if u.is_some() { "" } else { "AND i.restricted = 0 " }
+}
+
+pub fn uid(u: &Option<User>) -> i64 {
+    u.as_ref().map(|x| x.id).unwrap_or(-1)
+}
 
 #[derive(Serialize)]
 struct LatestRow {
@@ -202,46 +217,56 @@ struct Page {
     sort: Option<String>,
 }
 
-async fn latest_rows(st: &AppState, user: i64, offset: i64, limit: i64) -> ApiResult<Vec<LatestRow>> {
-    let libs: Vec<(i64, String)> = sqlx::query_as(
+async fn latest_rows(st: &AppState, user: i64, anon: bool, offset: i64, limit: i64) -> ApiResult<Vec<LatestRow>> {
+    let vr = if anon { "AND i.restricted = 0 " } else { "" };
+    let libs: Vec<(i64, String)> = sqlx::query_as(&format!(
         "SELECT l.id, l.name FROM libraries l JOIN items i ON i.library_id = l.id
-         GROUP BY l.id ORDER BY MAX(i.added_at) DESC, l.sort_name LIMIT ? OFFSET ?",
-    )
+         WHERE 1 = 1 {vr}GROUP BY l.id ORDER BY MAX(i.added_at) DESC, l.sort_name LIMIT ? OFFSET ?",
+    ))
     .bind(limit)
     .bind(offset)
     .fetch_all(&st.db)
     .await?;
-    let sql = format!("{CARD} WHERE i.library_id = ?2 ORDER BY i.added_at DESC, i.sort_title LIMIT 16");
+    let sql = format!("{CARD} WHERE i.library_id = ?2 {vr}ORDER BY i.added_at DESC, i.sort_title LIMIT 16");
     let mut rows = Vec::with_capacity(libs.len());
     for (id, name) in libs {
         let items = sqlx::query_as(&sql).bind(user).bind(id).fetch_all(&st.db).await?;
+        // A library whose visible items are all restricted drops out.
+        if items.is_empty() {
+            continue;
+        }
         rows.push(LatestRow { id, name, items });
     }
     Ok(rows)
 }
 
-async fn home(State(st): State<AppState>, user: User) -> ApiResult<Json<Home>> {
-    let libraries = sqlx::query_as(&format!("{LIB_CARD} ORDER BY l.sort_name")).fetch_all(&st.db).await?;
-    let resume = sqlx::query_as(&format!(
-        "{CARD} WHERE u.position > 0 ORDER BY u.last_played DESC LIMIT 24"
-    ))
-    .bind(user.id)
-    .fetch_all(&st.db)
-    .await?;
-    let latest = latest_rows(&st, user.id, 0, 6).await?;
+async fn home(State(st): State<AppState>, user: OptUser) -> ApiResult<Json<Home>> {
+    let anon = user.0.is_none();
+    let libraries = sqlx::query_as(&format!("{} ORDER BY l.sort_name", lib_card(anon))).fetch_all(&st.db).await?;
+    // No watch history without a user.
+    let resume = if anon {
+        vec![]
+    } else {
+        sqlx::query_as(&format!("{CARD} WHERE u.position > 0 ORDER BY u.last_played DESC LIMIT 24"))
+            .bind(uid(&user.0))
+            .fetch_all(&st.db)
+            .await?
+    };
+    let latest = latest_rows(&st, uid(&user.0), anon, 0, 6).await?;
     Ok(Json(Home { libraries, resume, latest }))
 }
 
-async fn latest(State(st): State<AppState>, user: User, Query(p): Query<Page>) -> ApiResult<Json<Vec<LatestRow>>> {
-    Ok(Json(latest_rows(&st, user.id, p.offset, p.limit.unwrap_or(6).clamp(1, 20)).await?))
+async fn latest(State(st): State<AppState>, user: OptUser, Query(p): Query<Page>) -> ApiResult<Json<Vec<LatestRow>>> {
+    let anon = user.0.is_none();
+    Ok(Json(latest_rows(&st, uid(&user.0), anon, p.offset, p.limit.unwrap_or(6).clamp(1, 20)).await?))
 }
 
-async fn libraries(State(st): State<AppState>, _u: User) -> ApiResult<Json<Vec<LibCard>>> {
-    Ok(Json(sqlx::query_as(&format!("{LIB_CARD} ORDER BY l.sort_name")).fetch_all(&st.db).await?))
+async fn libraries(State(st): State<AppState>, user: OptUser) -> ApiResult<Json<Vec<LibCard>>> {
+    Ok(Json(sqlx::query_as(&format!("{} ORDER BY l.sort_name", lib_card(user.0.is_none()))).fetch_all(&st.db).await?))
 }
 
-async fn library(State(st): State<AppState>, _u: User, Path(id): Path<i64>) -> ApiResult<Json<LibCard>> {
-    Ok(Json(sqlx::query_as(&format!("{LIB_CARD} WHERE l.id = ?")).bind(id).fetch_one(&st.db).await?))
+async fn library(State(st): State<AppState>, user: OptUser, Path(id): Path<i64>) -> ApiResult<Json<LibCard>> {
+    Ok(Json(sqlx::query_as(&format!("{} WHERE l.id = ?", lib_card(user.0.is_none()))).bind(id).fetch_one(&st.db).await?))
 }
 
 #[derive(Serialize)]
@@ -252,7 +277,7 @@ struct ItemPage {
 
 async fn library_items(
     State(st): State<AppState>,
-    user: User,
+    user: OptUser,
     Path(id): Path<i64>,
     Query(p): Query<Page>,
 ) -> ApiResult<Json<ItemPage>> {
@@ -260,9 +285,13 @@ async fn library_items(
         Some("added") => "i.added_at DESC, i.sort_title",
         _ => "i.sort_title, i.id",
     };
-    let total = sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE library_id = ?").bind(id).fetch_one(&st.db).await?;
-    let items = sqlx::query_as(&format!("{CARD} WHERE i.library_id = ?2 ORDER BY {order} LIMIT ?3 OFFSET ?4"))
-        .bind(user.id)
+    let v = vis(&user.0);
+    let total = sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM items i WHERE i.library_id = ? {v}"))
+        .bind(id)
+        .fetch_one(&st.db)
+        .await?;
+    let items = sqlx::query_as(&format!("{CARD} WHERE i.library_id = ?2 {v}ORDER BY {order} LIMIT ?3 OFFSET ?4"))
+        .bind(uid(&user.0))
         .bind(id)
         .bind(p.limit.unwrap_or(120).clamp(1, 500))
         .bind(p.offset.max(0))
@@ -272,9 +301,10 @@ async fn library_items(
 }
 
 /// The whole library as one nested folder tree, however many levels the folders have: the videos sit at the leaves.
-async fn library_tree(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> ApiResult<Json<crate::tree::Nested<Card>>> {
+async fn library_tree(State(st): State<AppState>, user: OptUser, Path(id): Path<i64>) -> ApiResult<Json<crate::tree::Nested<Card>>> {
     let order = crate::tree::entries(&st.db, id).await?;
-    let cards: Vec<Card> = sqlx::query_as(&format!("{CARD} WHERE i.library_id = ?2")).bind(user.id).bind(id).fetch_all(&st.db).await?;
+    let v = vis(&user.0);
+    let cards: Vec<Card> = sqlx::query_as(&format!("{CARD} WHERE i.library_id = ?2 {v}")).bind(uid(&user.0)).bind(id).fetch_all(&st.db).await?;
     let mut by_id: std::collections::HashMap<i64, Card> = cards.into_iter().map(|c| (c.id, c)).collect();
     Ok(Json(crate::tree::nest(order, |id| by_id.remove(&id))))
 }
@@ -284,6 +314,8 @@ struct ItemDetail {
     #[sqlx(flatten)]
     #[serde(flatten)]
     card: Card,
+    /// Anonymous visitors never receive a row with this set (see below).
+    restricted: bool,
     library_name: String,
     path: String,
     size: i64,
@@ -313,15 +345,16 @@ struct ItemDetail {
     upscaled: Vec<upscale::Version>,
 }
 
-async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> ApiResult<Json<ItemDetail>> {
+async fn item(State(st): State<AppState>, user: OptUser, Path(id): Path<i64>) -> ApiResult<Json<ItemDetail>> {
     let sql = format!(
-        "SELECT c.*, l.name AS library_name, i.path, i.size, i.added_at, i.container, i.video_codec, i.bitrate, i.crop,
+        "SELECT c.*, i.restricted, l.name AS library_name, i.path, i.size, i.added_at, i.container, i.video_codec, i.bitrate, i.crop,
            i.streams AS streams_raw, COALESCE(u.favorite, 0) AS favorite
          FROM ({CARD} WHERE i.id = ?2) c
          JOIN items i ON i.id = c.id JOIN libraries l ON l.id = i.library_id
          LEFT JOIN user_data u ON u.item_id = i.id AND u.user_id = ?1"
     );
-    let mut d: ItemDetail = sqlx::query_as(&sql).bind(user.id).bind(id).fetch_one(&st.db).await?;
+    let mut d: ItemDetail = sqlx::query_as(&sql).bind(uid(&user.0)).bind(id).fetch_one(&st.db).await?;
+    crate::auth::visible(d.restricted, &user.0)?;
     d.streams = d.streams_raw.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
     // Files scanned before codec tags were recorded: fill in the video tag once (hev1 vs hvc1 matters to Safari).
     if let Some(v) = d.streams.as_array_mut().and_then(|a| a.iter_mut().find(|s| s["type"] == "video" && s.get("tag").is_none())) {
@@ -349,7 +382,8 @@ async fn item(State(st): State<AppState>, user: User, Path(id): Path<i64>) -> Ap
     if d.next_id.is_none() {
         d.next_id = recommend::next_season(&st.db, d.card.library_id).await?;
     }
-    if !user.is_admin {
+    // Only admins see the real file path; anyone else gets the bare file name.
+    if !user.0.is_some_and(|u| u.is_admin) {
         d.path = crate::util::file_stem(&d.path);
     }
     Ok(Json(d))

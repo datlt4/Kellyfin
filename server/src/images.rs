@@ -1,6 +1,6 @@
 //! Pre-rendered WebP variants: images/{kind}/{id}/{s,m,l}.webp (+ orig for custom images).
 use crate::{
-    auth::MediaUser,
+    auth::{visible, OptMedia},
     error::{ApiError, ApiResult},
     AppState,
 };
@@ -63,9 +63,11 @@ pub async fn from_file(src: &Path, dst: &Path) -> anyhow::Result<String> {
     render(&["-i", &format!("file:{}", orig.display())], None, dst).await
 }
 
-/// Authenticated thumbnail servir: only images/{item,lib,user}/{id}/{s,m,l}.webp.
-/// `<img>` cannot send headers, so the session arrives as `?t=` (MediaUser).
-pub async fn file(State(st): State<AppState>, _u: MediaUser, RoutePath(path): RoutePath<String>) -> ApiResult<Response> {
+/// Thumbnail servir: only images/{item,lib,user}/{id}/{s,m,l}.webp.
+/// `<img>` cannot send headers, so the session arrives as `?t=`. Library posters
+/// are public; item thumbnails follow the item's restriction; user avatars stay
+/// login-only (nothing public links to them).
+pub async fn file(State(st): State<AppState>, u: OptMedia, RoutePath(path): RoutePath<String>) -> ApiResult<Response> {
     let bad = || ApiError::new(StatusCode::NOT_FOUND, "not found");
     let mut parts = path.split('/');
     let (kind, id, variant) = match (parts.next(), parts.next(), parts.next(), parts.next()) {
@@ -77,6 +79,16 @@ pub async fn file(State(st): State<AppState>, _u: MediaUser, RoutePath(path): Ro
     }
     if !id.chars().all(|c| c.is_ascii_digit()) || id.len() > 12 {
         return Err(bad());
+    }
+    if kind == "user" && u.0.is_none() {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "sign in to view this"));
+    }
+    if kind == "item" {
+        let restricted: Option<bool> =
+            sqlx::query_scalar("SELECT restricted FROM items WHERE id = ?").bind(id).fetch_optional(&st.db).await?;
+        if let Some(true) = restricted {
+            visible(true, &u.0)?;
+        }
     }
     let full = st.images.join(kind).join(id).join(variant);
     let req = Request::builder().uri("/").body(Body::empty()).map_err(anyhow::Error::from)?;

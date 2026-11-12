@@ -1,6 +1,6 @@
 import { A, useParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, Show } from "solid-js";
-import { api, checkNarration, fmtClock, pickPreset, fmtDuration, fmtRes, img, streamLabel, subLabel, upload, user, type ItemDetail, type Related, type UpscaleOverview } from "../api";
+import { ApiError, api, checkNarration, fmtClock, pickPreset, fmtDuration, fmtRes, img, streamLabel, subLabel, upload, user, type ItemDetail, type Related, type UpscaleOverview } from "../api";
 import { ItemCard, LibCard } from "../components/Card";
 import Row from "../components/Row";
 import Icon from "../components/Icon";
@@ -27,6 +27,11 @@ export default function Item() {
     return `/play/${item()!.id}?${q}`;
   };
   const resumable = () => !!item() && item()!.position > 5;
+
+  async function setRestricted(r: boolean) {
+    mutate({ ...item()!, restricted: r });
+    await api(`/admin/items/${item()!.id}`, { method: "PATCH", body: JSON.stringify({ restricted: r }) }).catch(() => refetch());
+  }
 
   async function rename() {
     const t = prompt("Title (empty = use the file name)", item()!.title);
@@ -79,8 +84,13 @@ export default function Item() {
     await api(`/items/${it.id}/userdata`, { method: "POST", body: JSON.stringify(body) }).catch(() => mutate(it));
   }
 
+  const denied = () => item.error instanceof ApiError && (item.error as ApiError).status === 401;
   return (
-    <Show when={item()} fallback={<div class="page-loading" />}>
+    <Show when={item()} fallback={
+      denied()
+        ? <div class="detail"><div class="detail-body"><h1>Restricted movie</h1><p class="muted">Sign in to watch this one.</p><A class="btn primary" href="/login">Sign in</A></div></div>
+        : <div class="page-loading" />
+    }>
       {(it) => (
         <div class="detail">
           <div class="backdrop" style={{ "background-color": it().color ?? undefined }}>
@@ -109,8 +119,10 @@ export default function Item() {
               <Show when={resumable()}>
                 <A class="btn" href={playHref(true)}>From start</A>
               </Show>
-              <button class="btn round" classList={{ on: it().played }} onClick={() => patch({ played: !it().played })} title="Watched"><Icon name="check" size={20} /></button>
-              <button class="btn round" classList={{ on: it().favorite }} onClick={() => patch({ favorite: !it().favorite })} title="Favorite"><Icon name="heart" size={20} /></button>
+              <Show when={user()}>
+                <button class="btn round" classList={{ on: it().played }} onClick={() => patch({ played: !it().played })} title="Watched"><Icon name="check" size={20} /></button>
+                <button class="btn round" classList={{ on: it().favorite }} onClick={() => patch({ favorite: !it().favorite })} title="Favorite"><Icon name="heart" size={20} /></button>
+              </Show>
             </div>
             <Show when={resumable()}>
               <div class="resume-bar"><div style={{ width: `${(it().position / (it().duration || 1)) * 100}%` }} /></div>
@@ -133,6 +145,9 @@ export default function Item() {
             </div>
             <Show when={user()?.is_admin}>
               <div class="row-btns admin-tools">
+                <label class="check" title="Only signed-in users can open this movie">
+                  <input type="checkbox" checked={it().restricted} onChange={(e) => setRestricted(e.currentTarget.checked)} /> Restricted
+                </label>
                 <button class="btn small" onClick={rename}>Edit title</button>
                 <button class="btn small" onClick={changeImage}>Change image</button>
                 <button class="btn small" onClick={autoImage} title="Grab a frame from the video">Auto image</button>

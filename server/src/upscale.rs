@@ -1,7 +1,7 @@
 //! Experimental AI upscaling. GPU workers (upscaler/) pull jobs from here over HTTP: they announce their models,
 //! claim a queued job, download the source, upload the result, and the result becomes an extra version of the video.
 use crate::{
-    auth::{Admin, MediaUser},
+    auth::{visible, Admin, OptMedia},
     error::{ApiError, ApiResult},
     util, AppState,
 };
@@ -242,7 +242,9 @@ pub async fn versions(st: &AppState, item: i64) -> sqlx::Result<Vec<Version>> {
         .await
 }
 
-pub async fn play(State(st): State<AppState>, _u: MediaUser, Path((id, model)): Path<(i64, String)>, req: Request) -> ApiResult<Response> {
+pub async fn play(State(st): State<AppState>, u: OptMedia, Path((id, model)): Path<(i64, String)>, req: Request) -> ApiResult<Response> {
+    let restricted: bool = sqlx::query_scalar("SELECT restricted FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
+    visible(restricted, &u.0)?;
     let out: String = sqlx::query_scalar("SELECT output FROM upscale_jobs WHERE item_id = ? AND model = ? AND status = 'done'")
         .bind(id)
         .bind(&model)

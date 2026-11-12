@@ -2,7 +2,7 @@
 //! A request far from what any job of the item is producing (seek, quality switch, another viewer) starts a new
 //! ffmpeg job; a few jobs per item can run side by side, so two viewers of one video do not cancel each other.
 use crate::{
-    auth::MediaUser,
+    auth::{visible, OptMedia},
     error::{ApiError, ApiResult},
     AppState,
 };
@@ -134,6 +134,7 @@ pub struct Transcoder {
 }
 
 struct Source {
+    restricted: bool,
     path: String,
     width: u32,
     height: u32,
@@ -424,13 +425,14 @@ async fn frame_rate(st: &AppState, id: i64, path: &str) -> f64 {
 }
 
 async fn source(st: &AppState, id: i64) -> ApiResult<Source> {
-    let (path, w, h, duration, streams): (String, Option<i64>, Option<i64>, Option<f64>, Option<String>) =
-        sqlx::query_as("SELECT path, width, height, duration, streams FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
+    let (path, w, h, duration, streams, restricted): (String, Option<i64>, Option<i64>, Option<f64>, Option<String>, bool) =
+        sqlx::query_as("SELECT path, width, height, duration, streams, restricted FROM items WHERE id = ?").bind(id).fetch_one(&st.db).await?;
     let (Some(w), Some(h), Some(duration)) = (w, h, duration) else {
         return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "file has not been probed"));
     };
     let fps = frame_rate(st, id, &path).await;
     Ok(Source {
+        restricted,
         path,
         width: w as u32,
         height: h as u32,
@@ -473,8 +475,9 @@ fn m3u8(body: String) -> Response {
 }
 
 /// Master playlist: one H.264 rendition per ladder rung, all with the chosen audio track.
-pub async fn master(State(st): State<AppState>, _u: MediaUser, Path(id): Path<i64>, Query(q): Query<MasterQ>) -> ApiResult<Response> {
+pub async fn master(State(st): State<AppState>, u: OptMedia, Path(id): Path<i64>, Query(q): Query<MasterQ>) -> ApiResult<Response> {
     let src = source(&st, id).await?;
+    visible(src.restricted, &u.0)?;
     let audio = if q.audio >= 0 { q.audio } else { first_audio(&src) };
     let t = q.t.unwrap_or_default();
     let mut out = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
@@ -498,11 +501,12 @@ fn first_audio(src: &Source) -> i64 {
 /// Variant playlist (`index.m3u8`) or one segment (`<n>.ts`).
 pub async fn hls_file(
     State(st): State<AppState>,
-    _u: MediaUser,
+    u: OptMedia,
     Path((id, p, audio, file)): Path<(i64, u32, i64, String)>,
     Query(q): Query<MasterQ>,
 ) -> ApiResult<Response> {
     let src = source(&st, id).await?;
+    visible(src.restricted, &u.0)?;
     if file == "index.m3u8" {
         let t = q.t.unwrap_or_default();
         let seg = src.seg_len();

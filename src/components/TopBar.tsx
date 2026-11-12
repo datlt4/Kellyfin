@@ -93,9 +93,10 @@ export default function TopBar() {
       </nav>
       <button class="more-btn" classList={{ unused: fit() >= (libs()?.length ?? 0) }} onClick={() => setMore(!more())}>More ▾</button>
       <A href="/search" class="icon search-btn" aria-label="Search"><Icon name="search" /></A>
-      <div class="avatar-wrap">
+      <Show when={user()} fallback={<A href="/login" class="btn small sign-in">Sign in</A>}>
+        <div class="avatar-wrap">
         <button class="avatar" onClick={() => setMenu(!menu())} aria-label="Account">
-          <Show when={user()?.img} fallback={user()?.name.slice(0, 1).toUpperCase()}>
+          <Show when={user()!.img} fallback={user()!.name.slice(0, 1).toUpperCase()}>
             <img src={img({ img: user()!.img!, imgv: user()!.imgv ?? 0 }, "s")} alt="" />
           </Show>
         </button>
@@ -121,7 +122,8 @@ export default function TopBar() {
             <div class="menu-foot">App {appVersion}{serverVersion() ? ` · Server ${serverVersion()}` : ""}</div>
           </div>
         </Show>
-      </div>
+        </div>
+      </Show>
       <Show when={more()}>
         {/* On wide screens only the libraries that did not fit; on phones all of them. */}
         <LibraryMenu libs={narrow() ? libs() ?? [] : (libs() ?? []).slice(fit())} onClose={() => setMore(false)} />

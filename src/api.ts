@@ -29,6 +29,7 @@ export type Stream = {
 };
 export type SubTrack = { key: string; lang: string | null; title: string | null; codec: string; external: boolean; supported: boolean };
 export type ItemDetail = Card & {
+  restricted: boolean;
   library_name: string;
   path: string;
   size: number;
