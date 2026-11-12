@@ -1,6 +1,6 @@
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { activeServer, api, appVersion, img, logout, savedServers, serverVersion, switchServer, switchTo, user, type Lib } from "../api";
+import { activeServer, api, appVersion, img, logout, savedServers, serverVersion, switchTo, user, type Lib } from "../api";
 import Icon from "./Icon";
 
 const fold = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/gi, "d").toLowerCase();
@@ -116,7 +116,7 @@ export default function TopBar() {
                 </button>
               )}
             </For>
-            <button onClick={() => { switchServer(); nav("/"); }}>Add / edit servers…</button>
+            <button onClick={() => { setMenu(false); nav("/login"); }}>Add / edit servers…</button>
             <button onClick={() => location.reload()}>Reload (F5)</button>
             <button onClick={async () => { await logout(); nav("/"); }}>Sign out</button>
             <div class="menu-foot">App {appVersion}{serverVersion() ? ` · Server ${serverVersion()}` : ""}</div>

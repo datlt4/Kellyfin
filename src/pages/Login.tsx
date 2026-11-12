@@ -127,7 +127,7 @@ export default function Login() {
         <form onSubmit={submit}>
           {/* Came here from "Add / edit servers" while signed in: go back without signing in again. */}
           <Show when={authToken()}>
-            <button type="button" class="btn small login-back" onClick={() => restore()}>← Back</button>
+            <button type="button" class="btn small login-back" onClick={async () => { await restore(); nav("/"); }}>← Back</button>
           </Show>
           <img src="/favicon.svg" alt="" width="56" height="56" />
           <h1>Kellyfin</h1>
